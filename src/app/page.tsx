@@ -51,6 +51,7 @@ export default function Home() {
 
   useEffect(() => {
     fetchAllData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function fetchAllData() {
@@ -62,8 +63,8 @@ export default function Home() {
     setGoldCurrent(null);
 
     try {
-      // Fetch semua data via proxy API (fix CORS)
-      const res = await fetch('/api/proxy-data');
+      // Fetch semua data via proxy API (fix CORS) — kirim lokasi yang dipilih
+      const res = await fetch('/api/proxy-data?location=' + encodeURIComponent(location));
       if (!res.ok) throw new Error('Gagal fetch data (status ' + res.status + ')');
       const data = await res.json();
 
@@ -103,7 +104,7 @@ export default function Home() {
         setFxCurrent(fxRate);
       }
 
-      // Parse Gold (kalau ada) — endpoint baru: { price: number, ... }
+      // Parse Gold (kalau ada) — endpoint: { price: number, ... }
       let goldPrice: number | null = null;
       if (data.gold && typeof data.gold.price === 'number') {
         goldPrice = data.gold.price;
