@@ -12,15 +12,13 @@ export async function POST(request: Request) {
     const body: ForecastData = await request.json();
     const { weather, fx, gold, location } = body;
 
-    // Coba pakai MAKERS_MODELS_KEY dulu
-    let apiKey = process.env.MAKERS_MODELS_KEY || '';
-    let modelName = 'openai/gpt-4o-mini';
-    let useBuiltIn = false;
+    const AI_GATEWAY_API_KEY = process.env.AI_GATEWAY_API_KEY || '';
 
-    // Kalau key kosong, coba pakai built-in model (tanpa key)
-    if (!apiKey) {
-      useBuiltIn = true;
-      modelName = '@makers/gpt-4o-mini'; // Built-in model
+    if (!AI_GATEWAY_API_KEY) {
+      return new Response(
+        JSON.stringify({ recommendations: '⚠️ AI tidak tersedia: API key tidak ditemukan.' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
     const safeNumber = (val: any, digits: number = 0): string => {
@@ -63,19 +61,14 @@ export async function POST(request: Request) {
       '4. [Rekomendasi umum]' + String.fromCharCode(10) + String.fromCharCode(10) +
       'Gunakan emoji, bahasa Indonesia, dan actionable.';
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json'
-    };
-
-    if (!useBuiltIn) {
-      headers['Authorization'] = 'Bearer ' + apiKey;
-    }
-
     const response = await fetch('https://ai-gateway.edgeone.link/v1/chat/completions', {
       method: 'POST',
-      headers: headers,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + AI_GATEWAY_API_KEY
+      },
       body: JSON.stringify({
-        model: modelName,
+        model: '@makers/gpt-4o-mini',
         messages: [
           { role: 'system', content: 'Anda adalah analis ekonomi untuk UMKM Indonesia. Berikan forecast dan rekomendasi praktis.' },
           { role: 'user', content: prompt }
@@ -89,10 +82,7 @@ export async function POST(request: Request) {
       const errorText = await response.text();
       console.error('AI Gateway error:', response.status, errorText);
       return new Response(
-        JSON.stringify({ 
-          recommendations: '⚠️ AI tidak tersedia: Gateway error ' + response.status + ' - ' + errorText,
-          aiForecast: null
-        }),
+        JSON.stringify({ recommendations: '⚠️ AI tidak tersedia: Gateway error ' + response.status }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -101,20 +91,14 @@ export async function POST(request: Request) {
     const aiContent = result.choices?.[0]?.message?.content || '';
 
     return new Response(
-      JSON.stringify({ 
-        recommendations: aiContent,
-        aiForecast: true
-      }),
+      JSON.stringify({ recommendations: aiContent, aiForecast: true }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
 
   } catch (error: any) {
     console.error('Recommendations error:', error?.message || error);
     return new Response(
-      JSON.stringify({ 
-        recommendations: '⚠️ AI tidak tersedia: ' + (error?.message || 'Unknown error'),
-        aiForecast: null
-      }),
+      JSON.stringify({ recommendations: '⚠️ AI tidak tersedia: ' + (error?.message || 'Unknown error') }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
   }
