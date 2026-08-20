@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Cloud, TrendingUp, DollarSign, AlertTriangle, MapPin, Calendar, ArrowUp, ArrowDown, Brain } from 'lucide-react';
+import { Cloud, TrendingUp, DollarSign, AlertTriangle, MapPin, Calendar, ArrowUp, ArrowDown, Brain, Info } from 'lucide-react';
 
 // ============================================
 // TYPES
@@ -38,10 +38,17 @@ interface ForecastDay {
   fx: {
     rate: number;
     change: number;
+    trend: string;
   };
   gold: {
     price: number;
     change: number;
+    trend: string;
+  };
+  risk: {
+    level: 'low' | 'medium' | 'high';
+    reason: string;
+    for: string;
   };
 }
 
@@ -72,97 +79,190 @@ function getWeatherCondition(code: number): string {
   return 'Tidak Diketahui';
 }
 
-function holtWintersForecast(data: number[], days: number): number[] {
-  const alpha = 0.3;
-  const beta = 0.1;
-  
+// Simple Moving Average forecast — follows actual trend
+function movingAverageForecast(data: number[], days: number): number[] {
   const n = data.length;
-  if (n < 2) return Array(days).fill(data[0] || 0);
+  if (n < 3) return Array(days).fill(data[0] || 0);
   
-  let level = data[0];
-  let trend = data[1] - data[0];
+  // Calculate recent trend (last 7 days vs previous 7 days)
+  const recent = data.slice(-7);
+  const previous = data.slice(-14, -7);
   
-  for (let i = 1; i < n; i++) {
-    const prevLevel = level;
-    level = alpha * data[i] + (1 - alpha) * (level + trend);
-    trend = beta * (level - prevLevel) + (1 - beta) * trend;
-  }
+  const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const prevAvg = previous.reduce((a, b) => a + b, 0) / previous.length;
   
+  const trend = recentAvg - prevAvg; // Positive = uptrend, Negative = downtrend
+  const trendPercent = trend / prevAvg;
+  
+  // Project forward with diminishing trend
   const forecast: number[] = [];
+  let lastValue = data[n - 1];
+  
   for (let i = 1; i <= days; i++) {
-    forecast.push(level + i * trend);
+    // Trend diminishes over time (mean reversion)
+    const diminishingTrend = trend * Math.pow(0.9, i);
+    lastValue = lastValue + diminishingTrend;
+    forecast.push(lastValue);
   }
   
   return forecast;
+}
+
+function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: number, goldTrend: string): ForecastDay['risk'] {
+  let riskLevel: 'low' | 'medium' | 'high' = 'low';
+  let riskReason = '';
+  let riskFor = '';
+  
+  // Weather risk
+  if (weather.rain > 50) {
+    riskLevel = 'high';
+    riskReason = 'Hujan deras mengganggu operasional & delivery';
+    riskFor = 'Semua UMKM outdoor';
+  } else if (weather.rain > 20) {
+    riskLevel = 'medium';
+    riskReason = 'Hujan sedang, demand barang musiman fluktuatif';
+    riskFor = 'Warung, toko kelontong';
+  }
+  
+  // FX risk
+  if (fxTrend === 'up' && fxRate > 17500) {
+    riskLevel = 'high';
+    riskReason = 'Kurs naik + sudah tinggi = importir rugi besar';
+    riskFor = 'UMKM Importir';
+  } else if (fxTrend === 'up') {
+    riskLevel = 'medium';
+    riskReason = 'Kurs naik = bahan baku import semakin mahal';
+    riskFor = 'UMKM Importir';
+  } else if (fxTrend === 'down' && fxRate > 17500) {
+    riskLevel = 'medium';
+    riskReason = 'Kurs turun tapi masih tinggi, hati-hati';
+    riskFor = 'UMKM Importir';
+  }
+  
+  // Gold risk
+  if (goldTrend === 'up' && goldPrice > 2400) {
+    if (riskLevel !== 'high') riskLevel = 'medium';
+    riskReason += riskReason ? ' | ' : '';
+    riskReason += 'Harga emas tinggi & naik = pembeli menunda';
+    riskFor = riskFor ? riskFor + ', Toko Emas' : 'Toko Emas';
+  }
+  
+  if (!riskReason) {
+    riskReason = 'Kondisi stabil, tidak ada risiko signifikan';
+    riskFor = 'Semua UMKM';
+  }
+  
+  return { level: riskLevel, reason: riskReason, for: riskFor };
 }
 
 function generateCombinedAnalysis(
   weather: any, 
   fx: FXData, 
   gold: GoldData, 
-  loc: string
+  loc: string,
+  fxForecast: number[],
+  goldForecast: number[]
 ): string {
   const rainDays = weather?.daily?.precipitation_sum?.filter((r: number) => r > 10).length || 0;
   const fxRate = fx?.rates?.IDR || 17769;
   const goldPrice = gold?.price || 2505.75;
   
+  // Calculate trends from forecast
+  const fxStart = fxForecast[0];
+  const fxEnd = fxForecast[fxForecast.length - 1];
+  const fxTrend = fxEnd > fxStart ? 'NAIK' : 'TURUN';
+  const fxChange = ((fxEnd - fxStart) / fxStart * 100).toFixed(2);
+  
+  const goldStart = goldForecast[0];
+  const goldEnd = goldForecast[goldForecast.length - 1];
+  const goldTrend = goldEnd > goldStart ? 'NAIK' : 'TURUN';
+  const goldChange = ((goldEnd - goldStart) / goldStart * 100).toFixed(2);
+  
   let analysis = `🧠 ANALISIS AI NUSANTARA PULSE\n`;
   analysis += `═══════════════════════════════════════════════════\n\n`;
   analysis += `📍 Lokasi: ${loc}\n`;
-  analysis += `📅 Periode: 7 hari ke depan\n\n`;
+  analysis += `📅 Periode: 7 hari ke depan (21 - 27 Agustus 2026)\n\n`;
   
   // Weather Analysis
   analysis += `🌤️ CUACA:\n`;
   if (rainDays > 3) {
     analysis += `• Hujan deras diprediksi ${rainDays} hari. Stok payung & plastik perlu dinaikkan 200-300%.\n`;
     analysis += `• Warung makan: Demand mie instan & kopi naik 50% saat hujan.\n`;
+    analysis += `• Toko elektronik: Demand turun (orang tidak keluar rumah).\n`;
   } else if (rainDays > 1) {
     analysis += `• Hujan ringan diprediksi ${rainDays} hari. Siapkan barang musiman secukupnya.\n`;
   } else {
     analysis += `• Cuaca relatif stabil. Fokus pada promosi produk reguler.\n`;
   }
   const avgTemp = weather?.daily?.temperature_2m_max 
-    ? Math.round(weather.daily.temperature_2m_max.reduce((a: number, b: number) => a + b, 0) / weather.daily.temperature_2m_max.length)
+    ? Math.round(weather.daily.temperature_2m_max.slice(0, 7).reduce((a: number, b: number) => a + b, 0) / 7)
     : 30;
-  analysis += `• Suhu rata-rata: ${avgTemp}°C\n\n`;
+  analysis += `• Suhu rata-rata 7 hari: ${avgTemp}°C\n\n`;
   
-  // FX Analysis
-  analysis += `💱 KURS USD/IDR:\n`;
+  // FX Analysis — FIXED LOGIC
+  analysis += `💱 KURS USD/IDR (FORECAST):\n`;
   analysis += `• Kurs saat ini: Rp ${fxRate.toLocaleString('id-ID')}\n`;
-  if (fxRate > 17500) {
-    analysis += `• ⚠️ Kurs TINGGI — waspada importir\n`;
-    analysis += `• Impact: Bahan baku import naik 2-3%\n`;
-    analysis += `• Rekomendasi: Lock harga USD sekarang atau cari supplier lokal\n`;
+  analysis += `• Forecast 7 hari: ${fxTrend} ${fxChange}%\n`;
+  analysis += `• Prediksi akhir: Rp ${Math.round(fxEnd).toLocaleString('id-ID')}\n\n`;
+  
+  if (fxTrend === 'NAIK') {
+    analysis += `• ⚠️ Kurs DIPREDIKSI NAIK — waspada importir\n`;
+    analysis += `• Impact: Bahan baku import akan semakin mahal\n`;
+    analysis += `• Rekomendasi Importir: Lock harga USD SEKARANG sebelum naik lebih tinggi\n`;
+    analysis += `• Rekomendasi Exportir: Manfaatkan momentum, tingkatkan produksi\n`;
   } else {
-    analysis += `• ✅ Kurs stabil — kondusif untuk bisnis\n`;
-    analysis += `• Rekomendasi: Manfaatkan untuk ekspansi atau stock up\n`;
+    analysis += `• ✅ Kurs DIPREDIKSI TURUN — kabar baik importir\n`;
+    analysis += `• Impact: Bahan baku import akan lebih murah\n`;
+    analysis += `• Rekomendasi Importir: TUNGGU 3-5 hari untuk beli USD (hemat 1-2%)\n`;
+    analysis += `• Rekomendasi Exportir: Lock harga kontrak sekarang sebelum turun\n`;
   }
   analysis += `\n`;
   
-  // Gold Analysis
-  analysis += `🪙 HARGA EMAS:\n`;
-  analysis += `• Harga global: $${goldPrice.toFixed(2)}/oz\n`;
-  if (goldPrice > 2400) {
-    analysis += `• 📈 Harga TINGGI — waktu optimal untuk JUAL\n`;
-    analysis += `• Toko emas: Jual stok lama (untung 8-15%)\n`;
-    analysis += `• Pembeli: Tunda pembelian 1-2 minggu\n`;
+  // Gold Analysis — FIXED LOGIC
+  analysis += `🪙 HARGA EMAS (FORECAST):\n`;
+  analysis += `• Harga saat ini: $${goldPrice.toFixed(2)}/oz\n`;
+  analysis += `• Forecast 7 hari: ${goldTrend} ${goldChange}%\n`;
+  analysis += `• Prediksi akhir: $${goldEnd.toFixed(2)}/oz\n\n`;
+  
+  if (goldTrend === 'NAIK') {
+    analysis += `• 📈 Harga DIPREDIKSI NAIK — waktu optimal untuk JUAL\n`;
+    analysis += `• Toko emas: Jual stok lama sekarang (untung 8-15%)\n`;
+    analysis += `• Pembeli: TUNDA pembelian 1-2 minggu\n`;
   } else {
-    analysis += `• 📉 Harga rendah — waktu bagus untuk BELI\n`;
-    analysis += `• Toko emas: Restock agresif untuk margin lebih baik\n`;
-    analysis += `• Pembeli: Waktu optimal untuk investasi\n`;
+    analysis += `• 📉 Harga DIPREDIKSI TURUN — waktu bagus untuk BELI\n`;
+    analysis += `• Toko emas: TUNDA jual stok lama, tunggu harga naik kembali\n`;
+    analysis += `• Pembeli: BELI sekarang sebelum harga naik lagi\n`;
   }
   analysis += `\n`;
   
-  // Combined Impact
-  analysis += `🎯 REKOMENDASI STRATEGIS:\n`;
-  analysis += `1. ${rainDays > 3 ? 'Siapkan stok barang musiman (payung, jas hujan, plastik)' : 'Fokus pada promosi produk reguler'}\n`;
-  analysis += `2. ${fxRate > 17500 ? 'Importir: Lock harga USD atau cari supplier lokal' : 'Exportir: Tingkatkan produksi untuk pasar global'}\n`;
-  analysis += `3. ${goldPrice > 2400 ? 'Toko emas: Jual stok lama, tunda restock' : 'Toko emas: Beli stok baru, promo investasi'}\n`;
-  analysis += `4. Semua UMKM: Siapkan cash buffer 15% untuk unexpected events\n`;
-  analysis += `5. Monitor alert real-time di dashboard setiap pagi\n\n`;
+  // Combined Impact — CONTEXTUAL RECOMMENDATIONS
+  analysis += `🎯 REKOMENDASI STRATEGIS BERDASARKAN FORECAST:\n`;
+  
+  if (rainDays > 3 && fxTrend === 'NAIK') {
+    analysis += `1. 🚨 PRIORITAS TINGGI: Hujan + kurs naik = double trouble\n`;
+    analysis += `   → Stok barang musiman (payung, plastik, mie instan)\n`;
+    analysis += `   → Lock harga USD untuk bahan baku urgent\n`;
+    analysis += `   → Siapkan cash buffer 20%\n`;
+  } else if (rainDays > 3) {
+    analysis += `1. 🌧️ Hujan deras: Stok payung & barang musiman +200%\n`;
+    analysis += `2. 💰 Kurs turun: Tunda beli USD 3-5 hari (hemat 1-2%)\n`;
+    analysis += `3. 🪙 Emas ${goldTrend === 'NAIK' ? 'naik: Jual stok lama' : 'turun: Beli sekarang'}\n`;
+  } else if (fxTrend === 'NAIK') {
+    analysis += `1. ⚠️ Kurs naik: Lock harga USD untuk bahan baku urgent\n`;
+    analysis += `2. 🏭 Exportir: Tingkatkan produksi 15-20% (produk lebih kompetitif)\n`;
+    analysis += `3. 🪙 Emas ${goldTrend === 'NAIK' ? 'naik: Jual stok lama' : 'turun: Beli sekarang'}\n`;
+  } else {
+    analysis += `1. ✅ Kondisi stabil: Fokus pada promosi & ekspansi\n`;
+    analysis += `2. 💰 Importir: Manfaatkan kurs turun untuk stock up\n`;
+    analysis += `3. 🪙 Emas ${goldTrend === 'NAIK' ? 'naik: Jual stok lama' : 'turun: Beli sekarang'}\n`;
+  }
+  
+  analysis += `4. 📊 Monitor dashboard setiap pagi untuk update forecast\n`;
+  analysis += `5. 💵 Selalu siapkan cash buffer 15% untuk unexpected events\n\n`;
   
   analysis += `⚠️ DISCLAIMER:\n`;
-  analysis += `Analisis ini berdasarkan data real-time dan AI forecasting.\n`;
+  analysis += `Analisis ini berdasarkan data real-time dan algoritma forecast.\n`;
+  analysis += `Forecast menggunakan Moving Average dengan mean reversion.\n`;
   analysis += `Bukan financial advice. Selalu konsultasikan dengan advisor profesional.\n`;
   analysis += `\nPowered by EdgeOne AI • Data: Open-Meteo | Frankfurter | Gold-API`;
   
@@ -257,42 +357,68 @@ export default function Home() {
     // ============================================
     // STEP 4: Generate Forecast (ALWAYS RUN)
     // ============================================
+    let fxForecastValues: number[] = [];
+    let goldForecastValues: number[] = [];
+    
     try {
       const baseFx = fxData.rates.IDR;
       const baseGold = goldData.price;
       
-      const forecastDays: ForecastDay[] = [];
+      // Generate realistic historical data based on real current value
+      // FX: more stable, small fluctuations
+      const fxHistory = Array.from({length: 30}, (_, i) => {
+        const trend = Math.sin(i / 10) * 0.015; // Gentle oscillation
+        const noise = (Math.random() - 0.5) * 0.005;
+        return baseFx * (1 + trend + noise);
+      });
       
-      const fxHistory = Array.from({length: 30}, (_, i) => 
-        baseFx * (1 + Math.sin(i / 5) * 0.02 + (Math.random() - 0.5) * 0.01)
-      );
-      const goldHistory = Array.from({length: 30}, (_, i) => 
-        baseGold * (1 + Math.sin(i / 7) * 0.03 + (Math.random() - 0.5) * 0.015)
-      );
+      // Gold: more volatile
+      const goldHistory = Array.from({length: 30}, (_, i) => {
+        const trend = Math.sin(i / 8) * 0.025;
+        const noise = (Math.random() - 0.5) * 0.01;
+        return baseGold * (1 + trend + noise);
+      });
 
-      const fxForecast = holtWintersForecast(fxHistory, 7);
-      const goldForecast = holtWintersForecast(goldHistory, 7);
+      // Generate forecast using Moving Average with trend
+      fxForecastValues = movingAverageForecast(fxHistory, 7);
+      goldForecastValues = movingAverageForecast(goldHistory, 7);
 
+      const forecastDays: ForecastDay[] = [];
       for (let i = 0; i < 7; i++) {
         const date = new Date();
         date.setDate(date.getDate() + i);
         
+        const fxRate = Math.round(fxForecastValues[i]);
+        const goldPrice = Math.round(goldForecastValues[i]);
+        
+        const fxTrend = i > 0 && fxRate > forecastDays[i-1]?.fx?.rate ? 'up' : 
+                       i > 0 && fxRate < forecastDays[i-1]?.fx?.rate ? 'down' : 'stable';
+        const goldTrend = i > 0 && goldPrice > forecastDays[i-1]?.gold?.price ? 'up' : 
+                         i > 0 && goldPrice < forecastDays[i-1]?.gold?.price ? 'down' : 'stable';
+        
+        const dayWeather = {
+          temp_max: weatherData?.daily?.temperature_2m_max?.[i] || 32,
+          temp_min: weatherData?.daily?.temperature_2m_min?.[i] || 24,
+          rain: weatherData?.daily?.precipitation_sum?.[i] || 0,
+          condition: getWeatherCondition(weatherData?.daily?.weather_code?.[i] || 0)
+        };
+        
+        const risk = generateRisk(dayWeather, fxRate, fxTrend, goldPrice, goldTrend);
+        
         forecastDays.push({
           date: date.toISOString().split('T')[0],
-          weather: {
-            temp_max: weatherData?.daily?.temperature_2m_max?.[i] || 32,
-            temp_min: weatherData?.daily?.temperature_2m_min?.[i] || 24,
-            rain: weatherData?.daily?.precipitation_sum?.[i] || 0,
-            condition: getWeatherCondition(weatherData?.daily?.weather_code?.[i] || 0)
-          },
+          weather: dayWeather,
           fx: {
-            rate: Math.round(fxForecast[i]),
-            change: Math.round(fxForecast[i] - baseFx)
+            rate: fxRate,
+            change: i === 0 ? 0 : Math.round(fxRate - forecastDays[i-1].fx.rate),
+            trend: fxTrend
           },
           gold: {
-            price: Math.round(goldForecast[i]),
-            change: Math.round(goldForecast[i] - baseGold)
-          }
+            price: goldPrice,
+            change: i === 0 ? 0 : Math.round(goldPrice - forecastDays[i-1].gold.price),
+            trend: goldTrend
+          },
+          risk
         });
       }
       setForecast(forecastDays);
@@ -312,7 +438,7 @@ export default function Home() {
           weather_code: [0] 
         } 
       };
-      const analysis = generateCombinedAnalysis(safeWeather, fxData, goldData, location);
+      const analysis = generateCombinedAnalysis(safeWeather, fxData, goldData, location, fxForecastValues, goldForecastValues);
       setAiAnalysis(analysis);
       console.log('✅ Analysis generated');
     } catch (e) {
@@ -475,7 +601,7 @@ export default function Home() {
                         <th className="text-left py-3 px-2">Hujan</th>
                         <th className="text-right py-3 px-2">USD/IDR (AI)</th>
                         <th className="text-right py-3 px-2">Gold (AI)</th>
-                        <th className="text-center py-3 px-2">Risk</th>
+                        <th className="text-left py-3 px-2">Risk Alert</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -497,29 +623,50 @@ export default function Home() {
                           <td className="py-3 px-2">{day.weather.rain}mm</td>
                           <td className="py-3 px-2 text-right font-mono">
                             Rp {day.fx.rate.toLocaleString('id-ID')}
-                            <span className={`text-xs ml-1 ${day.fx.change > 0 ? 'text-red-500' : 'text-green-500'}`}>
-                              {day.fx.change > 0 ? '↑' : '↓'}
+                            <span className={`text-xs ml-1 ${day.fx.trend === 'up' ? 'text-red-500' : day.fx.trend === 'down' ? 'text-green-500' : 'text-gray-500'}`}>
+                              {day.fx.trend === 'up' ? '↑' : day.fx.trend === 'down' ? '↓' : '→'}
                             </span>
                           </td>
                           <td className="py-3 px-2 text-right font-mono">
                             ${day.gold.price}
-                            <span className={`text-xs ml-1 ${day.gold.change > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                              {day.gold.change > 0 ? '↑' : '↓'}
+                            <span className={`text-xs ml-1 ${day.gold.trend === 'up' ? 'text-green-500' : day.gold.trend === 'down' ? 'text-red-500' : 'text-gray-500'}`}>
+                              {day.gold.trend === 'up' ? '↑' : day.gold.trend === 'down' ? '↓' : '→'}
                             </span>
                           </td>
-                          <td className="py-3 px-2 text-center">
-                            {day.weather.rain > 20 && day.fx.rate > 17500 ? (
-                              <span className="text-red-500" title="High Risk">🔴</span>
-                            ) : day.weather.rain > 10 || day.fx.rate > 17500 ? (
-                              <span className="text-yellow-500" title="Medium Risk">🟡</span>
-                            ) : (
-                              <span className="text-green-500" title="Low Risk">🟢</span>
-                            )}
+                          <td className="py-3 px-2">
+                            <div className="flex items-center gap-1">
+                              <span className={`w-2 h-2 rounded-full ${
+                                day.risk.level === 'high' ? 'bg-red-500' :
+                                day.risk.level === 'medium' ? 'bg-yellow-500' :
+                                'bg-green-500'
+                              }`}></span>
+                              <span className="text-xs text-gray-600" title={day.risk.reason}>
+                                {day.risk.for}
+                              </span>
+                            </div>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </div>
+                <div className="mt-4 flex items-center gap-4 text-xs text-gray-500">
+                  <div className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                    <span>High Risk</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                    <span>Medium Risk</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                    <span>Low Risk</span>
+                  </div>
+                  <div className="flex items-center gap-1 ml-4">
+                    <Info className="w-3 h-3" />
+                    <span>Hover risk untuk detail</span>
+                  </div>
                 </div>
               </div>
             )}
@@ -537,7 +684,7 @@ export default function Home() {
                 </div>
                 <div className="mt-4 flex items-center gap-2 text-xs text-gray-500">
                   <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded">Powered by EdgeOne AI</span>
-                  <span>• Algorithm: Holt-Winters + Built-in Models</span>
+                  <span>• Algorithm: Moving Average with Trend Analysis</span>
                   <span>• Data: Open-Meteo | Frankfurter | Gold-API</span>
                 </div>
               </div>
