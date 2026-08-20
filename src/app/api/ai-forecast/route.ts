@@ -94,27 +94,23 @@ async function aiAnalyze(
     const change = ((lastValue - firstValue) / firstValue) * 100;
     const trend = change > 0 ? 'NAIK' : 'TURUN';
 
-    const prompt = `Anda adalah analis ekonomi senior untuk UMKM Indonesia di kota ${location}.
-
-Data ${type} 30 hari terakhir: ${JSON.stringify(data.slice(-30))}
-Tren: ${trend} ${Math.abs(change).toFixed(2)}%
-Nilai terakhir: ${lastValue}
-Konteks: ${context}
-
-Berikan analisis strategis dalam Bahasa Indonesia yang mudah dipahami UMKM:
-
-1. TREN UTAMA (2-3 kalimat)
-2. RISIKO BAGI UMKM (3 poin bullet)
-3. REKOMENDASI STRATEGIS (4 poin bullet dengan emoji)
-4. LEVEL KEPERCAYAAN PREDIKSI
-
-Gunakan format yang rapi dan actionable. Jangan pakai jargon teknis.`;
+    const prompt = 'Anda adalah analis ekonomi senior untuk UMKM Indonesia di kota ' + location + '.\n\n' +
+      'Data ' + type + ' 30 hari terakhir: ' + JSON.stringify(data.slice(-30)) + '\n' +
+      'Tren: ' + trend + ' ' + Math.abs(change).toFixed(2) + '%\n' +
+      'Nilai terakhir: ' + lastValue + '\n' +
+      'Konteks: ' + context + '\n\n' +
+      'Berikan analisis strategis dalam Bahasa Indonesia yang mudah dipahami UMKM:\n\n' +
+      '1. TREN UTAMA (2-3 kalimat)\n' +
+      '2. RISIKO BAGI UMKM (3 poin bullet)\n' +
+      '3. REKOMENDASI STRATEGIS (4 poin bullet dengan emoji)\n' +
+      '4. LEVEL KEPERCAYAAN PREDIKSI\n\n' +
+      'Gunakan format yang rapi dan actionable. Jangan pakai jargon teknis.';
 
     const response = await fetch('https://ai-gateway.edgeone.link/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${MAKERS_MODELS_KEY}`
+        'Authorization': 'Bearer ' + MAKERS_MODELS_KEY
       },
       body: JSON.stringify({
         model: '@makers/deepseek-v4-flash',
@@ -128,7 +124,7 @@ Gunakan format yang rapi dan actionable. Jangan pakai jargon teknis.`;
     });
 
     if (!response.ok) {
-      throw new Error(`AI Gateway error: ${response.status}`);
+      throw new Error('AI Gateway error: ' + response.status);
     }
 
     const result = await response.json();
@@ -153,77 +149,72 @@ function generateFallbackAnalysis(data: number[], type: string, context: string)
   const trend = change > 0 ? 'NAIK' : 'TURUN';
 
   if (type === 'weather') {
-    return `🧠 ANALISIS AI CUACA
-═══════════════════════════════════════
-
-📊 TREN: ${trend} ${Math.abs(change).toFixed(1)}%
-
-RISIKO UMKM:
-• Cuaca ekstrem bisa ganggu operasional
-• Demand barang musiman fluktuatif
-• Delivery terganggu saat hujan deras
-
-REKOMENDASI:
-1. 🌦️ Monitor forecast harian
-2. 📦 Stok barang musiman 3-5 hari sebelumnya
-3. 🚚 Siapkan delivery backup
-4. 💰 Promo cuaca panas/hujan sesuai kondisi`;
+    return '🧠 ANALISIS AI CUACA\n' +
+      '═══════════════════════════════════════\n\n' +
+      '📊 TREN: ' + trend + ' ' + Math.abs(change).toFixed(1) + '%\n\n' +
+      'RISIKO UMKM:\n' +
+      '• Cuaca ekstrem bisa ganggu operasional\n' +
+      '• Demand barang musiman fluktuatif\n' +
+      '• Delivery terganggu saat hujan deras\n\n' +
+      'REKOMENDASI:\n' +
+      '1. 🌦️ Monitor forecast harian\n' +
+      '2. 📦 Stok barang musiman 3-5 hari sebelumnya\n' +
+      '3. 🚚 Siapkan delivery backup\n' +
+      '4. 💰 Promo cuaca panas/hujan sesuai kondisi';
   }
 
   if (type === 'fx') {
-    const fxRisks = change > 0
-      ? '• Importir: Bahan baku mahal, margin menipis
-• Harga barang import naik 2-3%
-• Pinjaman USD lebih mahal'
-      : '• Exportir: Produk lebih mahal di pasar global
-• Pendapatan export dalam IDR turun
-• Kompetitivitas menurun';
+    let fxRisks: string;
+    let fxRec1: string;
+    let fxRec2: string;
+    if (change > 0) {
+      fxRisks = '• Importir: Bahan baku mahal, margin menipis\n• Harga barang import naik 2-3%\n• Pinjaman USD lebih mahal';
+      fxRec1 = '🔒 Lock harga dengan supplier';
+      fxRec2 = '💱 Hedging dengan forward contract';
+    } else {
+      fxRisks = '• Exportir: Produk lebih mahal di pasar global\n• Pendapatan export dalam IDR turun\n• Kompetitivitas menurun';
+      fxRec1 = '📈 Tingkatkan produksi untuk export';
+      fxRec2 = '🌍 Cari pasar baru yang stabil';
+    }
 
-    const fxRec1 = change > 0 ? '🔒 Lock harga dengan supplier' : '📈 Tingkatkan produksi untuk export';
-    const fxRec2 = change > 0 ? '💱 Hedging dengan forward contract' : '🌍 Cari pasar baru yang stabil';
-
-    return `🧠 ANALISIS AI KURS USD/IDR
-═══════════════════════════════════════
-
-📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%
-• Saat ini: Rp ${lastValue.toLocaleString('id-ID')}
-
-RISIKO UMKM:
-${fxRisks}
-
-REKOMENDASI:
-1. ${fxRec1}
-2. ${fxRec2}
-3. 📊 Review pricing strategy mingguan
-4. 💵 Siapkan cash buffer 15-20%`;
+    return '🧠 ANALISIS AI KURS USD/IDR\n' +
+      '═══════════════════════════════════════\n\n' +
+      '📊 TREN: ' + trend + ' ' + Math.abs(change).toFixed(2) + '%\n' +
+      '• Saat ini: Rp ' + lastValue.toLocaleString('id-ID') + '\n\n' +
+      'RISIKO UMKM:\n' +
+      fxRisks + '\n\n' +
+      'REKOMENDASI:\n' +
+      '1. ' + fxRec1 + '\n' +
+      '2. ' + fxRec2 + '\n' +
+      '3. 📊 Review pricing strategy mingguan\n' +
+      '4. 💵 Siapkan cash buffer 15-20%';
   }
 
   if (type === 'gold') {
-    const goldRisks = change > 0
-      ? '• Toko emas: Restock mahal, margin tertekan
-• Pembeli menunda pembelian
-• Demand perhiasan turun'
-      : '• Toko emas: Stok lama rugi
-• Investor wait-and-see
-• Margin tipis saat rebound';
+    let goldRisks: string;
+    let goldRec1: string;
+    let goldRec2: string;
+    if (change > 0) {
+      goldRisks = '• Toko emas: Restock mahal, margin tertekan\n• Pembeli menunda pembelian\n• Demand perhiasan turun';
+      goldRec1 = '💰 JUAL stok lama (untung 8-15%)';
+      goldRec2 = '⏰ Tunda restock 1-2 minggu';
+    } else {
+      goldRisks = '• Toko emas: Stok lama rugi\n• Investor wait-and-see\n• Margin tipis saat rebound';
+      goldRec1 = '🪙 BELI stok baru untuk persiapan';
+      goldRec2 = '📈 Restock agresif untuk margin';
+    }
 
-    const goldRec1 = change > 0 ? '💰 JUAL stok lama (untung 8-15%)' : '🪙 BELI stok baru untuk persiapan';
-    const goldRec2 = change > 0 ? '⏰ Tunda restock 1-2 minggu' : '📈 Restock agresif untuk margin';
-
-    return `🧠 ANALISIS AI HARGA EMAS
-═══════════════════════════════════════
-
-📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%
-• Saat ini: $${lastValue.toFixed(2)}/oz
-
-RISIKO UMKM:
-${goldRisks}
-
-REKOMENDASI:
-1. ${goldRec1}
-2. ${goldRec2}
-3. 💳 Promo cicilan menarik pembeli
-4. 📰 Monitor berita geopolitik & kebijakan The Fed`;
+    return '🧠 ANALISIS AI HARGA EMAS\n' +
+      '═══════════════════════════════════════\n\n' +
+      '📊 TREN: ' + trend + ' ' + Math.abs(change).toFixed(2) + '%\n' +
+      '• Saat ini: $' + lastValue.toFixed(2) + '/oz\n\n' +
+      'RISIKO UMKM:\n' +
+      goldRisks + '\n\n' +
+      'REKOMENDASI:\n' +
+      '1. ' + goldRec1 + '\n' +
+      '2. ' + goldRec2 + '\n' +
+      '3. 💳 Promo cicilan menarik pembeli\n' +
+      '4. 📰 Monitor berita geopolitik & kebijakan The Fed';
   }
 
   return 'Analisis tidak tersedia.';
