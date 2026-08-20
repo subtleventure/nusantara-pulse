@@ -70,10 +70,10 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         model: '@makers/deepseek-v4-flash',
         messages: [
-          { role: 'system', content: 'Anda adalah analis ekonomi untuk UMKM Indonesia. Berikan forecast dan rekomendasi praktis.' },
+          { role: 'system', content: 'Anda adalah analis ekonomi untuk UMKM Indonesia. Berikan forecast dan rekomendasi praktis. Langsung jawab tanpa proses berpikir panjang.' },
           { role: 'user', content: prompt }
         ],
-        max_tokens: 1200,
+        max_tokens: 3000,
         temperature: 0.7
       })
     });
@@ -88,7 +88,23 @@ export async function POST(request: Request) {
     }
 
     const result = await response.json();
-    const aiContent = result.choices?.[0]?.message?.content || '';
+    const message = result.choices?.[0]?.message;
+    const finishReason = result.choices?.[0]?.finish_reason;
+
+    // deepseek reasoning model kadang taruh jawaban di reasoning_content
+    // kalau content kosong karena token habis di proses berpikir
+    let aiContent = message?.content || '';
+    if (!aiContent && message?.reasoning_content) {
+      aiContent = message.reasoning_content;
+    }
+
+    if (!aiContent) {
+      console.error('AI response kosong. finish_reason:', finishReason, 'raw:', JSON.stringify(result));
+      return new Response(
+        JSON.stringify({ recommendations: '⚠️ AI tidak tersedia: jawaban kosong (finish_reason: ' + (finishReason || 'unknown') + ')' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
 
     return new Response(
       JSON.stringify({ recommendations: aiContent, aiForecast: true }),
