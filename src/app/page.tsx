@@ -49,13 +49,6 @@ interface ForecastDay {
   };
 }
 
-interface AIForecastResponse {
-  forecast: number[];
-  confidence: number;
-  analysis: string;
-  model: string;
-}
-
 const locations: Record<string, { lat: number; lon: number }> = {
   Jakarta: { lat: -6.2088, lon: 106.8456 },
   Surabaya: { lat: -7.2575, lon: 112.7521 },
@@ -80,20 +73,20 @@ function getWeatherCondition(code: number): string {
 function generateHistoricalData(baseValue: number, days: number, volatility: number): number[] {
   const data: number[] = [];
   let current = baseValue;
-
+  
   for (let i = days - 1; i >= 0; i--) {
     const change = current * volatility * (Math.sin(i * 0.5) * 0.5);
     current = current - change;
     data.unshift(Math.round(current));
   }
-
+  
   data[data.length - 1] = Math.round(baseValue);
   return data;
 }
 
 function simpleMovingAverage(data: number[], period: number): number[] {
   const sma: number[] = [];
-
+  
   for (let i = 0; i < data.length; i++) {
     if (i < period - 1) {
       sma.push(data[i]);
@@ -105,15 +98,16 @@ function simpleMovingAverage(data: number[], period: number): number[] {
       sma.push(Math.round(sum / period));
     }
   }
-
+  
   return sma;
 }
 
 function forecastWithSMA(baseValue: number, days: number, volatility: number): number[] {
   const historical = generateHistoricalData(baseValue, 30, volatility);
+  const sma = simpleMovingAverage(historical, 3);
   const forecast: number[] = [];
   const lastData = [...historical];
-
+  
   for (let i = 0; i < days; i++) {
     const last3 = lastData.slice(-3);
     const sum = last3.reduce((a, b) => a + b, 0);
@@ -121,7 +115,7 @@ function forecastWithSMA(baseValue: number, days: number, volatility: number): n
     forecast.push(nextValue);
     lastData.push(nextValue);
   }
-
+  
   return forecast;
 }
 
@@ -129,7 +123,7 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
   let riskLevel: 'low' | 'medium' | 'high' = 'low';
   let riskReason = '';
   let riskFor = '';
-
+  
   if (weather.rain > 50) {
     riskLevel = 'high';
     riskReason = 'Hujan deras mengganggu operasional & delivery';
@@ -139,7 +133,7 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
     riskReason = 'Hujan sedang, demand barang musiman fluktuatif';
     riskFor = 'Warung, toko kelontong';
   }
-
+  
   if (fxTrend === 'up' && fxRate > 17500) {
     riskLevel = 'high';
     riskReason = 'Kurs naik + sudah tinggi = importir rugi besar';
@@ -150,218 +144,171 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
     riskReason += 'Kurs naik = bahan baku import semakin mahal';
     riskFor = riskFor ? riskFor + ', UMKM Importir' : 'UMKM Importir';
   }
-
+  
   if (goldTrend === 'up' && goldPrice > 2400) {
     if (riskLevel !== 'high') riskLevel = 'medium';
     riskReason = riskReason ? riskReason + ' | ' : '';
     riskReason += 'Harga emas tinggi & naik = pembeli menunda';
     riskFor = riskFor ? riskFor + ', Toko Emas' : 'Toko Emas';
   }
-
+  
   if (!riskReason) {
     riskReason = 'Kondisi stabil, tidak ada risiko signifikan';
     riskFor = 'Semua UMKM';
   }
-
+  
   return { level: riskLevel, reason: riskReason, for: riskFor };
 }
 
-// === BARU: Call AI Forecast API via EdgeOne ===
-async function fetchAIForecast(
-  type: 'weather' | 'fx' | 'gold',
-  historicalData: number[],
-  days: number,
-  context: string,
-  location: string
-): Promise<AIForecastResponse | null> {
-  try {
-    const res = await fetch('/api/ai-forecast', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type,
-        historicalData,
-        days,
-        context,
-        location
-      })
-    });
-
-    if (!res.ok) throw new Error('AI Forecast API error');
-    return await res.json();
-  } catch (e) {
-    console.error('AI Forecast error:', e);
-    return null;
-  }
-}
-
-// === BARU: Fallback analysis kalau AI tidak tersedia ===
-function generateFallbackAnalysis(
+// Fetch AI recommendations from EdgeOne API
+async function fetchAIRecommendations(
   weather: any,
   fx: FXData,
   gold: GoldData,
-  location: string,
+  fxForecast: number[],
+  goldForecast: number[],
+  loc: string
+): Promise<string> {
+  try {
+    const payload = {
+      weather: {
+        rainDays: weather?.daily?.precipitation_sum?.filter((r: number) => r > 10).length || 0,
+        tempMax: weather?.daily?.temperature_2m_max?.[0] || 30,
+        condition: getWeatherCondition(weather?.daily?.weather_code?.[0] || 0)
+      },
+      fx: {
+        current: fx?.rates?.IDR || 17769,
+        forecastStart: fxForecast[0],
+        forecastEnd: fxForecast[fxForecast.length - 1],
+        trend: fxForecast[fxForecast.length - 1] > fxForecast[0] ? 'NAIK' : 'TURUN'
+      },
+      gold: {
+        current: gold?.price || 2505.75,
+        forecastStart: goldForecast[0],
+        forecastEnd: goldForecast[goldForecast.length - 1],
+        trend: goldForecast[goldForecast.length - 1] > goldForecast[0] ? 'NAIK' : 'TURUN'
+      },
+      location: loc
+    };
+
+    const res = await fetch('/api/ai-recommendations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) return '';
+    const data = await res.json();
+    return data.recommendations || '';
+  } catch (e) {
+    console.error('AI recommendations error:', e);
+    return '';
+  }
+}
+
+function generateCombinedAnalysis(
+  weather: any, 
+  fx: FXData, 
+  gold: GoldData, 
+  loc: string,
   fxForecast: number[],
   goldForecast: number[]
 ): string {
   const rainDays = weather?.daily?.precipitation_sum?.filter((r: number) => r > 10).length || 0;
   const fxRate = fx?.rates?.IDR || 17769;
   const goldPrice = gold?.price || 2505.75;
-
+  
   const fxStart = fxForecast[0];
   const fxEnd = fxForecast[fxForecast.length - 1];
   const fxTrend = fxEnd > fxStart ? 'NAIK' : 'TURUN';
   const fxChangePercent = ((fxEnd - fxStart) / fxStart * 100).toFixed(2);
-
+  
   const goldStart = goldForecast[0];
   const goldEnd = goldForecast[goldForecast.length - 1];
   const goldTrend = goldEnd > goldStart ? 'NAIK' : 'TURUN';
   const goldChangePercent = ((goldEnd - goldStart) / goldStart * 100).toFixed(2);
-
-  let analysis = `🧠 ANALISIS AI NUSANTARA PULSE (Fallback Mode)
-`;
-  analysis += `═══════════════════════════════════════════════════
-
-`;
-  analysis += `📍 Lokasi: ${location}
-`;
-  analysis += `📅 Periode: 7 hari ke depan
-`;
-  analysis += `📊 Metode Forecast: Simple Moving Average (SMA-3)
-`;
-  analysis += `🤖 Model: SMA-3 Fallback (EdgeOne AI tidak tersedia)
-
-`;
-
-  analysis += `🌤️ CUACA (Open-Meteo — Real Data):
-`;
+  
+  let analysis = `🧠 ANALISIS AI NUSANTARA PULSE\n`;
+  analysis += `═══════════════════════════════════════════════════\n\n`;
+  analysis += `📍 Lokasi: ${loc}\n`;
+  analysis += `📅 Periode: 7 hari ke depan\n`;
+  analysis += `📊 Metode Forecast: Simple Moving Average (SMA-3)\n`;
+  
+  analysis += `🌤️ CUACA (Open-Meteo — Real Data):\n`;
   if (rainDays > 3) {
-    analysis += `• Hujan deras diprediksi ${rainDays} hari
-`;
-    analysis += `• Stok payung & plastik: +200-300%
-`;
-    analysis += `• Warung makan: Demand mie instan & kopi +50%
-`;
+    analysis += `• Hujan deras diprediksi ${rainDays} hari\n`;
+    analysis += `• Stok payung & plastik: +200-300%\n`;
+    analysis += `• Warung makan: Demand mie instan & kopi +50%\n`;
   } else if (rainDays > 1) {
-    analysis += `• Hujan ringan diprediksi ${rainDays} hari
-`;
-    analysis += `• Siapkan barang musiman secukupnya
-`;
+    analysis += `• Hujan ringan diprediksi ${rainDays} hari\n`;
+    analysis += `• Siapkan barang musiman secukupnya\n`;
   } else {
-    analysis += `• Cuaca stabil, tidak ada hujan signifikan
-`;
-    analysis += `• Fokus pada promosi produk reguler
-`;
+    analysis += `• Cuaca stabil, tidak ada hujan signifikan\n`;
+    analysis += `• Fokus pada promosi produk reguler\n`;
   }
-  analysis += `
-`;
-
-  analysis += `💱 KURS USD/IDR (SMA-3 Forecast):
-`;
-  analysis += `• Saat ini: Rp ${fxRate.toLocaleString('id-ID')}
-`;
-  analysis += `• Forecast 7 hari: ${fxTrend} ${fxChangePercent}%
-`;
-  analysis += `• Prediksi akhir: Rp ${Math.round(fxEnd).toLocaleString('id-ID')}
-
-`;
-
+  analysis += `\n`;
+  
+  analysis += `💱 KURS USD/IDR (SMA-3 Forecast):\n`;
+  analysis += `• Saat ini: Rp ${fxRate.toLocaleString('id-ID')}\n`;
+  analysis += `• Forecast 7 hari: ${fxTrend} ${fxChangePercent}%\n`;
+  analysis += `• Prediksi akhir: Rp ${Math.round(fxEnd).toLocaleString('id-ID')}\n\n`;
+  
   if (fxTrend === 'NAIK') {
-    analysis += `⚠️ KURS DIPREDIKSI NAIK
-`;
-    analysis += `• Importir: Bahan baku akan semakin MAHAL
-`;
-    analysis += `• ✅ TINDAKAN: Lock harga USD SEKARANG
-`;
-    analysis += `• Exportir: Produk lebih kompetitif → tingkatkan produksi
-`;
+    analysis += `⚠️ KURS DIPREDIKSI NAIK (berdasarkan SMA-3)\n`;
+    analysis += `• Importir: Bahan baku akan semakin MAHAL\n`;
+    analysis += `• ✅ TINDAKAN: Lock harga USD SEKARANG\n`;
+    analysis += `• Exportir: Produk lebih kompetitif → tingkatkan produksi\n`;
   } else {
-    analysis += `✅ KURS DIPREDIKSI TURUN
-`;
-    analysis += `• Importir: Bahan baku akan LEBIH MURAH
-`;
-    analysis += `• ✅ TINDAKAN: TUNDA beli USD 3-5 hari
-`;
-    analysis += `• Exportir: Lock kontrak sekarang sebelum turun
-`;
+    analysis += `✅ KURS DIPREDIKSI TURUN (berdasarkan SMA-3)\n`;
+    analysis += `• Importir: Bahan baku akan LEBIH MURAH\n`;
+    analysis += `• ✅ TINDAKAN: TUNDA beli USD 3-5 hari\n`;
+    analysis += `• Exportir: Lock kontrak sekarang sebelum turun\n`;
   }
-  analysis += `
-`;
-
-  analysis += `🪙 HARGA EMAS (SMA-3 Forecast):
-`;
-  analysis += `• Saat ini: $${goldPrice.toFixed(2)}/oz
-`;
-  analysis += `• Forecast 7 hari: ${goldTrend} ${goldChangePercent}%
-`;
-  analysis += `• Prediksi akhir: $${goldEnd.toFixed(2)}/oz
-
-`;
-
+  analysis += `\n`;
+  
+  analysis += `🪙 HARGA EMAS (SMA-3 Forecast):\n`;
+  analysis += `• Saat ini: $${goldPrice.toFixed(2)}/oz\n`;
+  analysis += `• Forecast 7 hari: ${goldTrend} ${goldChangePercent}%\n`;
+  analysis += `• Prediksi akhir: $${goldEnd.toFixed(2)}/oz\n\n`;
+  
   if (goldTrend === 'NAIK') {
-    analysis += `📈 EMAS DIPREDIKSI NAIK
-`;
-    analysis += `• Toko emas: JUAL stok lama sekarang
-`;
-    analysis += `• Pembeli: TUNDA pembelian 1-2 minggu
-`;
+    analysis += `📈 EMAS DIPREDIKSI NAIK (berdasarkan SMA-3)\n`;
+    analysis += `• Toko emas: JUAL stok lama sekarang\n`;
+    analysis += `• Pembeli: TUNDA pembelian 1-2 minggu\n`;
   } else {
-    analysis += `📉 EMAS DIPREDIKSI TURUN
-`;
-    analysis += `• Toko emas: TUNDA jual, tunggu rebound
-`;
-    analysis += `• Pembeli: BELI sekarang sebelum naik
-`;
+    analysis += `📉 EMAS DIPREDIKSI TURUN (berdasarkan SMA-3)\n`;
+    analysis += `• Toko emas: TUNDA jual, tunggu rebound\n`;
+    analysis += `• Pembeli: BELI sekarang sebelum naik\n`;
   }
-  analysis += `
-`;
-
-  analysis += `🎯 REKOMENDASI STRATEGIS:
-`;
-
+  analysis += `\n`;
+  
+  analysis += `🎯 REKOMENDASI STRATEGIS:\n`;
+  
   if (fxTrend === 'TURUN' && goldTrend === 'TURUN') {
-    analysis += `1. 💰 Importir: TUNDA beli USD (hemat 1-2% dalam 3-5 hari)
-`;
-    analysis += `2. 🪙 Toko emas: TUNDA jual stok, tunggu rebound
-`;
-    analysis += `3. 📦 Stock up bahan baku lokal
-`;
+    analysis += `1. 💰 Importir: TUNDA beli USD (hemat 1-2% dalam 3-5 hari)\n`;
+    analysis += `2. 🪙 Toko emas: TUNDA jual stok, tunggu rebound\n`;
+    analysis += `3. 📦 Stock up bahan baku lokal\n`;
   } else if (fxTrend === 'NAIK' && goldTrend === 'NAIK') {
-    analysis += `1. 🔒 Importir: Lock harga USD SEKARANG
-`;
-    analysis += `2. 🪙 Toko emas: JUAL stok lama SEKARANG
-`;
-    analysis += `3. 📈 Exportir: Tingkatkan produksi 15-20%
-`;
+    analysis += `1. 🔒 Importir: Lock harga USD SEKARANG\n`;
+    analysis += `2. 🪙 Toko emas: JUAL stok lama SEKARANG\n`;
+    analysis += `3. 📈 Exportir: Tingkatkan produksi 15-20%\n`;
   } else if (fxTrend === 'NAIK' && goldTrend === 'TURUN') {
-    analysis += `1. 🔒 Importir: Lock harga USD SEKARANG
-`;
-    analysis += `2. 🪙 Toko emas: TUNDA jual, tunggu rebound
-`;
-    analysis += `3. 💵 Siapkan cash buffer 20%
-`;
+    analysis += `1. 🔒 Importir: Lock harga USD SEKARANG\n`;
+    analysis += `2. 🪙 Toko emas: TUNDA jual, tunggu rebound\n`;
+    analysis += `3. 💵 Siapkan cash buffer 20%\n`;
   } else {
-    analysis += `1. 💰 Importir: TUNDA beli USD (hemat 1-2%)
-`;
-    analysis += `2. 🪙 Toko emas: JUAL stok lama SEKARANG
-`;
-    analysis += `3. 📊 Fokus pada promosi & ekspansi pasar
-`;
+    analysis += `1. 💰 Importir: TUNDA beli USD (hemat 1-2%)\n`;
+    analysis += `2. 🪙 Toko emas: JUAL stok lama SEKARANG\n`;
+    analysis += `3. 📊 Fokus pada promosi & ekspansi pasar\n`;
   }
-
-  analysis += `4. 🌦️ ${rainDays > 3 ? 'Siapkan barang musiman (payung, plastik, mie instan)' : 'Monitor cuaca untuk planning stok'}
-`;
-  analysis += `5. 📱 Cek dashboard setiap pagi untuk update forecast
-
-`;
-
-  analysis += `⚠️ DISCLAIMER:
-`;
-  analysis += `Forecast menggunakan Simple Moving Average (SMA-3).
-`;
-  analysis += `Bukan financial advice. Konsultasikan advisor profesional.
-`;
-
+  
+  analysis += `4. 🌦️ ${rainDays > 3 ? 'Siapkan barang musiman (payung, plastik, mie instan)' : 'Monitor cuaca untuk planning stok'}\n`;
+  analysis += `5. 📱 Cek dashboard setiap pagi untuk update forecast\n\n`;
+  
+  analysis += `⚠️ DISCLAIMER:\n`;
+  analysis += `Forecast menggunakan Simple Moving Average (SMA-3).\n`;
+  analysis += `Bukan financial advice. Konsultasikan advisor profesional.\n`;
+  
   return analysis;
 }
 
@@ -372,13 +319,12 @@ export default function Home() {
   const [gold, setGold] = useState<GoldData | null>(null);
   const [forecast, setForecast] = useState<ForecastDay[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState('');
-  const [loading, setLoading] = useState(false);
   const [aiModel, setAiModel] = useState('SMA-3');
+  const [loading, setLoading] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
-    setAiModel('SMA-3');
-
+    
     let weatherData = null;
     try {
       const { lat, lon } = locations[location];
@@ -431,7 +377,7 @@ export default function Home() {
 
     const baseFx = fxData.rates.IDR;
     const baseGold = goldData.price;
-
+    
     const fxForecastValues = forecastWithSMA(baseFx, 7, 0.005);
     const goldForecastValues = forecastWithSMA(baseGold, 7, 0.01);
 
@@ -439,22 +385,22 @@ export default function Home() {
     for (let i = 0; i < 7; i++) {
       const date = new Date();
       date.setDate(date.getDate() + i);
-
+      
       const fxRate = fxForecastValues[i];
       const goldPrice = goldForecastValues[i];
-
+      
       const fxTrend = i === 0 ? 'stable' : fxRate > fxForecastValues[i-1] ? 'up' : 'down';
       const goldTrend = i === 0 ? 'stable' : goldPrice > goldForecastValues[i-1] ? 'up' : 'down';
-
+      
       const dayWeather = {
         temp_max: weatherData?.daily?.temperature_2m_max?.[i] || 32,
         temp_min: weatherData?.daily?.temperature_2m_min?.[i] || 24,
         rain: weatherData?.daily?.precipitation_sum?.[i] || 0,
         condition: getWeatherCondition(weatherData?.daily?.weather_code?.[i] || 0)
       };
-
+      
       const risk = generateRisk(dayWeather, fxRate, fxTrend, goldPrice, goldTrend);
-
+      
       forecastDays.push({
         date: date.toISOString().split('T')[0],
         weather: dayWeather,
@@ -473,78 +419,37 @@ export default function Home() {
     }
     setForecast(forecastDays);
 
-    // === BARU: Fetch AI Analysis dari EdgeOne AI Gateway ===
-    const fxHistorical = generateHistoricalData(fxData.rates.IDR, 30, 0.005);
-    const goldHistorical = generateHistoricalData(goldData.price, 30, 0.01);
-    const weatherHistorical = weatherData?.daily?.precipitation_sum || [0, 0, 0, 0, 0, 0, 0];
+    const safeWeather = weatherData || { 
+      daily: { 
+        precipitation_sum: [0], 
+        temperature_2m_max: [30], 
+        weather_code: [0] 
+      } 
+    };
 
-    const [fxAI, goldAI, weatherAI] = await Promise.all([
-      fetchAIForecast('fx', fxHistorical, 7, `Kurs USD/IDR untuk UMKM ${location}`, location),
-      fetchAIForecast('gold', goldHistorical, 7, `Harga emas global untuk UMKM ${location}`, location),
-      fetchAIForecast('weather', weatherHistorical, 7, `Cuaca ${location} untuk UMKM outdoor`, location)
-    ]);
+    // Generate base analysis (SMA forecast data)
+    const baseAnalysis = generateCombinedAnalysis(safeWeather, fxData, goldData, location, fxForecastValues, goldForecastValues);
 
-    // Tentukan model yang digunakan
-    const models = [fxAI?.model, goldAI?.model, weatherAI?.model].filter(Boolean);
-    const hasAI = models.some(m => m && m !== 'fallback-sma');
-    if (hasAI) {
-      setAiModel('deepseek-v4-flash (EdgeOne AI)');
+    // Fetch AI recommendations based on forecast data
+    const aiRecs = await fetchAIRecommendations(
+      safeWeather,
+      fxData,
+      goldData,
+      fxForecastValues,
+      goldForecastValues,
+      location
+    );
+
+    // Combine: base analysis + AI recommendations
+    let finalAnalysis = baseAnalysis;
+    if (aiRecs && aiRecs !== '') {
+      finalAnalysis += '
+
+' + aiRecs;
+      setAiModel(aiRecs.includes('(AI)') ? 'gpt-4o-mini (OpenAI via EdgeOne)' : 'SMA-3');
     }
-
-    // Gabungkan analisis AI
-    let combinedAnalysis = `🧠 ANALISIS AI NUSANTARA PULSE
-`;
-    combinedAnalysis += `═══════════════════════════════════════════════════
-
-`;
-    combinedAnalysis += `📍 Lokasi: ${location}
-`;
-    combinedAnalysis += `📅 Periode: 7 hari ke depan
-`;
-    combinedAnalysis += `🤖 Model: ${hasAI ? 'deepseek-v4-flash (EdgeOne AI Gateway)' : 'SMA-3 Fallback'}
-
-`;
-
-    if (fxAI?.analysis && fxAI.model !== 'fallback-sma') {
-      combinedAnalysis += `${fxAI.analysis}
-
-`;
-    }
-
-    if (goldAI?.analysis && goldAI.model !== 'fallback-sma') {
-      combinedAnalysis += `${goldAI.analysis}
-
-`;
-    }
-
-    if (weatherAI?.analysis && weatherAI.model !== 'fallback-sma') {
-      combinedAnalysis += `${weatherAI.analysis}
-
-`;
-    }
-
-    // Kalau semua AI gagal, pakai fallback
-    if (!hasAI) {
-      const safeWeather = weatherData || { 
-        daily: { 
-          precipitation_sum: [0], 
-          temperature_2m_max: [30], 
-          weather_code: [0] 
-        } 
-      };
-      combinedAnalysis = generateFallbackAnalysis(safeWeather, fxData, goldData, location, fxForecastValues, goldForecastValues);
-    } else {
-      combinedAnalysis += `⚠️ DISCLAIMER:
-`;
-      combinedAnalysis += `Forecast menggunakan Simple Moving Average (SMA-3).
-`;
-      combinedAnalysis += `Analisis AI via EdgeOne AI Gateway (DeepSeek).
-`;
-      combinedAnalysis += `Bukan financial advice. Konsultasikan advisor profesional.
-`;
-    }
-
-    setAiAnalysis(combinedAnalysis);
+    setAiAnalysis(finalAnalysis);
+    
     setLoading(false);
   };
 
@@ -721,7 +626,7 @@ export default function Home() {
                   {aiAnalysis}
                 </div>
                 <div className="mt-4 flex items-center gap-2 text-xs text-gray-500">
-                  <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded">{aiModel.includes('deepseek') ? 'Powered by EdgeOne AI (DeepSeek)' : 'Powered by EdgeOne'}</span>
+                  <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded">{aiModel.includes('OpenAI') ? 'Powered by OpenAI via EdgeOne' : 'Powered by EdgeOne'}</span>
                   <span>• Algorithm: Simple Moving Average (SMA-3)</span>
                   <span>• Data: Open-Meteo | Frankfurter | Gold-API</span>
                 </div>
@@ -740,3 +645,5 @@ export default function Home() {
     </div>
   );
 }
+
+
