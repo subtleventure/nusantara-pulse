@@ -187,7 +187,6 @@ function generateCombinedAnalysis(
   analysis += `📍 Lokasi: ${loc}\n`;
   analysis += `📅 Periode: 7 hari ke depan\n`;
   analysis += `📊 Metode Forecast: Simple Moving Average (SMA-3)\n`;
-  analysis += `   Sama dengan metode Microsoft Excel\n\n`;
   
   analysis += `🌤️ CUACA (Open-Meteo — Real Data):\n`;
   if (rainDays > 3) {
@@ -262,7 +261,6 @@ function generateCombinedAnalysis(
   
   analysis += `⚠️ DISCLAIMER:\n`;
   analysis += `Forecast menggunakan Simple Moving Average (SMA-3).\n`;
-  analysis += `Hasil forecast TETAP dan tidak berubah setiap refresh.\n`;
   analysis += `Bukan financial advice. Konsultasikan advisor profesional.\n`;
   
   return analysis;
@@ -579,3 +577,6 @@ export default function Home() {
     </div>
   );
 }
+
+
+
