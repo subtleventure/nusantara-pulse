@@ -68,7 +68,7 @@ export async function POST(request: Request) {
         'Authorization': 'Bearer ' + AI_GATEWAY_API_KEY
       },
       body: JSON.stringify({
-        model: '@makers/gpt-4o-mini',
+        model: '@makers/deepseek-v4-flash',
         messages: [
           { role: 'system', content: 'Anda adalah analis ekonomi untuk UMKM Indonesia. Berikan forecast dan rekomendasi praktis.' },
           { role: 'user', content: prompt }
