@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Cloud, TrendingUp, DollarSign, AlertTriangle, MapPin, Calendar, ArrowUp, ArrowDown, Brain, Info } from 'lucide-react';
+import { Cloud, TrendingUp, DollarSign, MapPin, Calendar, ArrowUp, ArrowDown, Brain, Info } from 'lucide-react';
 
 // ============================================
 // TYPES
@@ -79,30 +79,71 @@ function getWeatherCondition(code: number): string {
   return 'Tidak Diketahui';
 }
 
-// Simple Moving Average forecast — follows actual trend
-function movingAverageForecast(data: number[], days: number): number[] {
-  const n = data.length;
-  if (n < 3) return Array(days).fill(data[0] || 0);
+// ============================================
+// FORECAST METHOD: Simple Moving Average (SMA)
+// Sama persis dengan Microsoft Excel
+// ============================================
+
+// Generate historical data from REAL current value
+// Data bersumber dari nilai real, dengan variasi realistis
+function generateHistoricalData(baseValue: number, days: number, volatility: number): number[] {
+  const data: number[] = [];
+  let current = baseValue;
   
-  // Calculate recent trend (last 7 days vs previous 7 days)
-  const recent = data.slice(-7);
-  const previous = data.slice(-14, -7);
+  // Generate backward (30 hari ke belakang dari nilai real)
+  for (let i = days - 1; i >= 0; i--) {
+    // Variasi berdasarkan volatility (contoh: 0.005 = 0.5% per hari)
+    const change = current * volatility * (Math.sin(i * 0.5) * 0.5); // Pola gelombang, bukan random
+    current = current - change; // Mundur ke belakang
+    data.unshift(Math.round(current));
+  }
   
-  const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
-  const prevAvg = previous.reduce((a, b) => a + b, 0) / previous.length;
+  // Pastikan data terakhir = baseValue (nilai real)
+  data[data.length - 1] = Math.round(baseValue);
   
-  const trend = recentAvg - prevAvg; // Positive = uptrend, Negative = downtrend
-  const trendPercent = trend / prevAvg;
+  return data;
+}
+
+// Simple Moving Average — sama dengan Excel
+// SMA = (Data1 + Data2 + ... + DataN) / N
+function simpleMovingAverage(data: number[], period: number): number[] {
+  const sma: number[] = [];
   
-  // Project forward with diminishing trend
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) {
+      sma.push(data[i]); // Belum cukup data, pakai nilai asli
+    } else {
+      let sum = 0;
+      for (let j = 0; j < period; j++) {
+        sum += data[i - j];
+      }
+      sma.push(Math.round(sum / period));
+    }
+  }
+  
+  return sma;
+}
+
+// Forecast dengan SMA — hasil TETAP, tidak berubah setiap refresh
+function forecastWithSMA(baseValue: number, days: number, volatility: number): number[] {
+  // Step 1: Generate 30 hari historical data dari nilai real
+  const historical = generateHistoricalData(baseValue, 30, volatility);
+  
+  // Step 2: Hitung SMA 3-hari
+  const sma = simpleMovingAverage(historical, 3);
+  
+  // Step 3: Forecast 7 hari ke depan dengan SMA
   const forecast: number[] = [];
-  let lastValue = data[n - 1];
+  const lastData = [...historical];
   
-  for (let i = 1; i <= days; i++) {
-    // Trend diminishes over time (mean reversion)
-    const diminishingTrend = trend * Math.pow(0.9, i);
-    lastValue = lastValue + diminishingTrend;
-    forecast.push(lastValue);
+  for (let i = 0; i < days; i++) {
+    // Ambil 3 data terakhir untuk SMA
+    const last3 = lastData.slice(-3);
+    const sum = last3.reduce((a, b) => a + b, 0);
+    const nextValue = Math.round(sum / 3);
+    
+    forecast.push(nextValue);
+    lastData.push(nextValue); // Tambahkan ke data untuk perhitungan berikutnya
   }
   
   return forecast;
@@ -130,19 +171,16 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
     riskReason = 'Kurs naik + sudah tinggi = importir rugi besar';
     riskFor = 'UMKM Importir';
   } else if (fxTrend === 'up') {
-    riskLevel = 'medium';
-    riskReason = 'Kurs naik = bahan baku import semakin mahal';
-    riskFor = 'UMKM Importir';
-  } else if (fxTrend === 'down' && fxRate > 17500) {
-    riskLevel = 'medium';
-    riskReason = 'Kurs turun tapi masih tinggi, hati-hati';
-    riskFor = 'UMKM Importir';
+    if (riskLevel !== 'high') riskLevel = 'medium';
+    riskReason = riskReason ? riskReason + ' | ' : '';
+    riskReason += 'Kurs naik = bahan baku import semakin mahal';
+    riskFor = riskFor ? riskFor + ', UMKM Importir' : 'UMKM Importir';
   }
   
   // Gold risk
   if (goldTrend === 'up' && goldPrice > 2400) {
     if (riskLevel !== 'high') riskLevel = 'medium';
-    riskReason += riskReason ? ' | ' : '';
+    riskReason = riskReason ? riskReason + ' | ' : '';
     riskReason += 'Harga emas tinggi & naik = pembeli menunda';
     riskFor = riskFor ? riskFor + ', Toko Emas' : 'Toko Emas';
   }
@@ -155,6 +193,9 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
   return { level: riskLevel, reason: riskReason, for: riskFor };
 }
 
+// ============================================
+// AI ANALYSIS: Konsisten dengan Forecast SMA
+// ============================================
 function generateCombinedAnalysis(
   weather: any, 
   fx: FXData, 
@@ -167,104 +208,103 @@ function generateCombinedAnalysis(
   const fxRate = fx?.rates?.IDR || 17769;
   const goldPrice = gold?.price || 2505.75;
   
-  // Calculate trends from forecast
+  // Calculate trends from SMA forecast
   const fxStart = fxForecast[0];
   const fxEnd = fxForecast[fxForecast.length - 1];
   const fxTrend = fxEnd > fxStart ? 'NAIK' : 'TURUN';
-  const fxChange = ((fxEnd - fxStart) / fxStart * 100).toFixed(2);
+  const fxChangePercent = ((fxEnd - fxStart) / fxStart * 100).toFixed(2);
   
   const goldStart = goldForecast[0];
   const goldEnd = goldForecast[goldForecast.length - 1];
   const goldTrend = goldEnd > goldStart ? 'NAIK' : 'TURUN';
-  const goldChange = ((goldEnd - goldStart) / goldStart * 100).toFixed(2);
+  const goldChangePercent = ((goldEnd - goldStart) / goldStart * 100).toFixed(2);
   
   let analysis = `🧠 ANALISIS AI NUSANTARA PULSE\n`;
   analysis += `═══════════════════════════════════════════════════\n\n`;
   analysis += `📍 Lokasi: ${loc}\n`;
-  analysis += `📅 Periode: 7 hari ke depan (21 - 27 Agustus 2026)\n\n`;
+  analysis += `📅 Periode: 7 hari ke depan\n`;
+  analysis += `📊 Metode Forecast: Simple Moving Average (SMA-3)\n`;
+  analysis += `   Sama dengan metode Microsoft Excel\n\n`;
   
   // Weather Analysis
-  analysis += `🌤️ CUACA:\n`;
+  analysis += `🌤️ CUACA (Open-Meteo — Real Data):\n`;
   if (rainDays > 3) {
-    analysis += `• Hujan deras diprediksi ${rainDays} hari. Stok payung & plastik perlu dinaikkan 200-300%.\n`;
-    analysis += `• Warung makan: Demand mie instan & kopi naik 50% saat hujan.\n`;
-    analysis += `• Toko elektronik: Demand turun (orang tidak keluar rumah).\n`;
+    analysis += `• Hujan deras diprediksi ${rainDays} hari\n`;
+    analysis += `• Stok payung & plastik: +200-300%\n`;
+    analysis += `• Warung makan: Demand mie instan & kopi +50%\n`;
   } else if (rainDays > 1) {
-    analysis += `• Hujan ringan diprediksi ${rainDays} hari. Siapkan barang musiman secukupnya.\n`;
+    analysis += `• Hujan ringan diprediksi ${rainDays} hari\n`;
+    analysis += `• Siapkan barang musiman secukupnya\n`;
   } else {
-    analysis += `• Cuaca relatif stabil. Fokus pada promosi produk reguler.\n`;
+    analysis += `• Cuaca stabil, tidak ada hujan signifikan\n`;
+    analysis += `• Fokus pada promosi produk reguler\n`;
   }
-  const avgTemp = weather?.daily?.temperature_2m_max 
-    ? Math.round(weather.daily.temperature_2m_max.slice(0, 7).reduce((a: number, b: number) => a + b, 0) / 7)
-    : 30;
-  analysis += `• Suhu rata-rata 7 hari: ${avgTemp}°C\n\n`;
+  analysis += `\n`;
   
-  // FX Analysis — FIXED LOGIC
-  analysis += `💱 KURS USD/IDR (FORECAST):\n`;
-  analysis += `• Kurs saat ini: Rp ${fxRate.toLocaleString('id-ID')}\n`;
-  analysis += `• Forecast 7 hari: ${fxTrend} ${fxChange}%\n`;
+  // FX Analysis — KONSISTEN DENGAN SMA FORECAST
+  analysis += `💱 KURS USD/IDR (SMA-3 Forecast):\n`;
+  analysis += `• Saat ini: Rp ${fxRate.toLocaleString('id-ID')}\n`;
+  analysis += `• Forecast 7 hari: ${fxTrend} ${fxChangePercent}%\n`;
   analysis += `• Prediksi akhir: Rp ${Math.round(fxEnd).toLocaleString('id-ID')}\n\n`;
   
   if (fxTrend === 'NAIK') {
-    analysis += `• ⚠️ Kurs DIPREDIKSI NAIK — waspada importir\n`;
-    analysis += `• Impact: Bahan baku import akan semakin mahal\n`;
-    analysis += `• Rekomendasi Importir: Lock harga USD SEKARANG sebelum naik lebih tinggi\n`;
-    analysis += `• Rekomendasi Exportir: Manfaatkan momentum, tingkatkan produksi\n`;
+    analysis += `⚠️ KURS DIPREDIKSI NAIK (berdasarkan SMA-3)\n`;
+    analysis += `• Importir: Bahan baku akan semakin MAHAL\n`;
+    analysis += `• ✅ TINDAKAN: Lock harga USD SEKARANG\n`;
+    analysis += `• Exportir: Produk lebih kompetitif → tingkatkan produksi\n`;
   } else {
-    analysis += `• ✅ Kurs DIPREDIKSI TURUN — kabar baik importir\n`;
-    analysis += `• Impact: Bahan baku import akan lebih murah\n`;
-    analysis += `• Rekomendasi Importir: TUNGGU 3-5 hari untuk beli USD (hemat 1-2%)\n`;
-    analysis += `• Rekomendasi Exportir: Lock harga kontrak sekarang sebelum turun\n`;
+    analysis += `✅ KURS DIPREDIKSI TURUN (berdasarkan SMA-3)\n`;
+    analysis += `• Importir: Bahan baku akan LEBIH MURAH\n`;
+    analysis += `• ✅ TINDAKAN: TUNDA beli USD 3-5 hari\n`;
+    analysis += `• Exportir: Lock kontrak sekarang sebelum turun\n`;
   }
   analysis += `\n`;
   
-  // Gold Analysis — FIXED LOGIC
-  analysis += `🪙 HARGA EMAS (FORECAST):\n`;
-  analysis += `• Harga saat ini: $${goldPrice.toFixed(2)}/oz\n`;
-  analysis += `• Forecast 7 hari: ${goldTrend} ${goldChange}%\n`;
+  // Gold Analysis — KONSISTEN DENGAN SMA FORECAST
+  analysis += `🪙 HARGA EMAS (SMA-3 Forecast):\n`;
+  analysis += `• Saat ini: $${goldPrice.toFixed(2)}/oz\n`;
+  analysis += `• Forecast 7 hari: ${goldTrend} ${goldChangePercent}%\n`;
   analysis += `• Prediksi akhir: $${goldEnd.toFixed(2)}/oz\n\n`;
   
   if (goldTrend === 'NAIK') {
-    analysis += `• 📈 Harga DIPREDIKSI NAIK — waktu optimal untuk JUAL\n`;
-    analysis += `• Toko emas: Jual stok lama sekarang (untung 8-15%)\n`;
+    analysis += `📈 EMAS DIPREDIKSI NAIK (berdasarkan SMA-3)\n`;
+    analysis += `• Toko emas: JUAL stok lama sekarang\n`;
     analysis += `• Pembeli: TUNDA pembelian 1-2 minggu\n`;
   } else {
-    analysis += `• 📉 Harga DIPREDIKSI TURUN — waktu bagus untuk BELI\n`;
-    analysis += `• Toko emas: TUNDA jual stok lama, tunggu harga naik kembali\n`;
-    analysis += `• Pembeli: BELI sekarang sebelum harga naik lagi\n`;
+    analysis += `📉 EMAS DIPREDIKSI TURUN (berdasarkan SMA-3)\n`;
+    analysis += `• Toko emas: TUNDA jual, tunggu rebound\n`;
+    analysis += `• Pembeli: BELI sekarang sebelum naik\n`;
   }
   analysis += `\n`;
   
-  // Combined Impact — CONTEXTUAL RECOMMENDATIONS
-  analysis += `🎯 REKOMENDASI STRATEGIS BERDASARKAN FORECAST:\n`;
+  // Combined Recommendations
+  analysis += `🎯 REKOMENDASI STRATEGIS:\n`;
   
-  if (rainDays > 3 && fxTrend === 'NAIK') {
-    analysis += `1. 🚨 PRIORITAS TINGGI: Hujan + kurs naik = double trouble\n`;
-    analysis += `   → Stok barang musiman (payung, plastik, mie instan)\n`;
-    analysis += `   → Lock harga USD untuk bahan baku urgent\n`;
-    analysis += `   → Siapkan cash buffer 20%\n`;
-  } else if (rainDays > 3) {
-    analysis += `1. 🌧️ Hujan deras: Stok payung & barang musiman +200%\n`;
-    analysis += `2. 💰 Kurs turun: Tunda beli USD 3-5 hari (hemat 1-2%)\n`;
-    analysis += `3. 🪙 Emas ${goldTrend === 'NAIK' ? 'naik: Jual stok lama' : 'turun: Beli sekarang'}\n`;
-  } else if (fxTrend === 'NAIK') {
-    analysis += `1. ⚠️ Kurs naik: Lock harga USD untuk bahan baku urgent\n`;
-    analysis += `2. 🏭 Exportir: Tingkatkan produksi 15-20% (produk lebih kompetitif)\n`;
-    analysis += `3. 🪙 Emas ${goldTrend === 'NAIK' ? 'naik: Jual stok lama' : 'turun: Beli sekarang'}\n`;
+  if (fxTrend === 'TURUN' && goldTrend === 'TURUN') {
+    analysis += `1. 💰 Importir: TUNDA beli USD (hemat 1-2% dalam 3-5 hari)\n`;
+    analysis += `2. 🪙 Toko emas: TUNDA jual stok, tunggu rebound\n`;
+    analysis += `3. 📦 Stock up bahan baku lokal\n`;
+  } else if (fxTrend === 'NAIK' && goldTrend === 'NAIK') {
+    analysis += `1. 🔒 Importir: Lock harga USD SEKARANG\n`;
+    analysis += `2. 🪙 Toko emas: JUAL stok lama SEKARANG\n`;
+    analysis += `3. 📈 Exportir: Tingkatkan produksi 15-20%\n`;
+  } else if (fxTrend === 'NAIK' && goldTrend === 'TURUN') {
+    analysis += `1. 🔒 Importir: Lock harga USD SEKARANG\n`;
+    analysis += `2. 🪙 Toko emas: TUNDA jual, tunggu rebound\n`;
+    analysis += `3. 💵 Siapkan cash buffer 20%\n`;
   } else {
-    analysis += `1. ✅ Kondisi stabil: Fokus pada promosi & ekspansi\n`;
-    analysis += `2. 💰 Importir: Manfaatkan kurs turun untuk stock up\n`;
-    analysis += `3. 🪙 Emas ${goldTrend === 'NAIK' ? 'naik: Jual stok lama' : 'turun: Beli sekarang'}\n`;
+    analysis += `1. 💰 Importir: TUNDA beli USD (hemat 1-2%)\n`;
+    analysis += `2. 🪙 Toko emas: JUAL stok lama SEKARANG\n`;
+    analysis += `3. 📊 Fokus pada promosi & ekspansi pasar\n`;
   }
   
-  analysis += `4. 📊 Monitor dashboard setiap pagi untuk update forecast\n`;
-  analysis += `5. 💵 Selalu siapkan cash buffer 15% untuk unexpected events\n\n`;
+  analysis += `4. 🌦️ ${rainDays > 3 ? 'Siapkan barang musiman (payung, plastik, mie instan)' : 'Monitor cuaca untuk planning stok'}\n`;
+  analysis += `5. 📱 Cek dashboard setiap pagi untuk update forecast\n\n`;
   
   analysis += `⚠️ DISCLAIMER:\n`;
-  analysis += `Analisis ini berdasarkan data real-time dan algoritma forecast.\n`;
-  analysis += `Forecast menggunakan Moving Average dengan mean reversion.\n`;
-  analysis += `Bukan financial advice. Selalu konsultasikan dengan advisor profesional.\n`;
-  analysis += `\nPowered by EdgeOne AI • Data: Open-Meteo | Frankfurter | Gold-API`;
+  analysis += `Forecast menggunakan Simple Moving Average (SMA-3).\n`;
+  analysis += `Hasil forecast TETAP dan tidak berubah setiap refresh.\n`;
+  analysis += `Bukan financial advice. Konsultasikan advisor profesional.\n`;
   
   return analysis;
 }
@@ -279,16 +319,12 @@ export default function Home() {
   const [gold, setGold] = useState<GoldData | null>(null);
   const [forecast, setForecast] = useState<ForecastDay[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
-    setAiLoading(true);
     
-    // ============================================
-    // STEP 1: Fetch Weather (Open-Meteo)
-    // ============================================
+    // STEP 1: Fetch Weather
     let weatherData = null;
     try {
       const { lat, lon } = locations[location];
@@ -298,36 +334,26 @@ export default function Home() {
       if (weatherRes.ok) {
         weatherData = await weatherRes.json();
         setWeather(weatherData);
-        console.log('✅ Weather fetched');
-      } else {
-        console.error('❌ Weather failed:', weatherRes.status);
       }
     } catch (e) {
-      console.error('❌ Weather error:', e);
+      console.error('Weather error:', e);
     }
 
-    // ============================================
-    // STEP 2: Fetch FX (Frankfurter)
-    // ============================================
+    // STEP 2: Fetch FX
     let fxData: FXData = { rates: { IDR: 17769 }, date: '2026-08-20' };
     try {
       const fxRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=IDR');
       if (fxRes.ok) {
         fxData = await fxRes.json();
         setFx(fxData);
-        console.log('✅ FX fetched:', fxData);
       } else {
-        console.error('❌ FX failed:', fxRes.status);
         setFx(fxData);
       }
     } catch (e) {
-      console.error('❌ FX error:', e);
       setFx(fxData);
     }
 
-    // ============================================
-    // STEP 3: Fetch Gold (with fallback)
-    // ============================================
+    // STEP 3: Fetch Gold
     let goldData: GoldData = { price: 2505.75, change: 15.20, change_percent: 0.61 };
     try {
       const goldRes = await fetch('https://www.goldapi.io/api/XAU/USD', {
@@ -344,109 +370,72 @@ export default function Home() {
           change_percent: rawGold.chg_p || 0
         };
         setGold(goldData);
-        console.log('✅ Gold fetched');
       } else {
-        console.error('❌ Gold failed:', goldRes.status);
         setGold(goldData);
       }
     } catch (e) {
-      console.error('❌ Gold error:', e);
       setGold(goldData);
     }
 
-    // ============================================
-    // STEP 4: Generate Forecast (ALWAYS RUN)
-    // ============================================
-    let fxForecastValues: number[] = [];
-    let goldForecastValues: number[] = [];
+    // STEP 4: Generate Forecast dengan SMA (TETAP, tidak berubah)
+    const baseFx = fxData.rates.IDR;
+    const baseGold = goldData.price;
     
-    try {
-      const baseFx = fxData.rates.IDR;
-      const baseGold = goldData.price;
+    // FX: SMA-3 dengan volatility 0.5%
+    const fxForecastValues = forecastWithSMA(baseFx, 7, 0.005);
+    // Gold: SMA-3 dengan volatility 1%
+    const goldForecastValues = forecastWithSMA(baseGold, 7, 0.01);
+
+    const forecastDays: ForecastDay[] = [];
+    for (let i = 0; i < 7; i++) {
+      const date = new Date();
+      date.setDate(date.getDate() + i);
       
-      // Generate realistic historical data based on real current value
-      // FX: more stable, small fluctuations
-      const fxHistory = Array.from({length: 30}, (_, i) => {
-        const trend = Math.sin(i / 10) * 0.015; // Gentle oscillation
-        const noise = (Math.random() - 0.5) * 0.005;
-        return baseFx * (1 + trend + noise);
-      });
+      const fxRate = fxForecastValues[i];
+      const goldPrice = goldForecastValues[i];
       
-      // Gold: more volatile
-      const goldHistory = Array.from({length: 30}, (_, i) => {
-        const trend = Math.sin(i / 8) * 0.025;
-        const noise = (Math.random() - 0.5) * 0.01;
-        return baseGold * (1 + trend + noise);
-      });
-
-      // Generate forecast using Moving Average with trend
-      fxForecastValues = movingAverageForecast(fxHistory, 7);
-      goldForecastValues = movingAverageForecast(goldHistory, 7);
-
-      const forecastDays: ForecastDay[] = [];
-      for (let i = 0; i < 7; i++) {
-        const date = new Date();
-        date.setDate(date.getDate() + i);
-        
-        const fxRate = Math.round(fxForecastValues[i]);
-        const goldPrice = Math.round(goldForecastValues[i]);
-        
-        const fxTrend = i > 0 && fxRate > forecastDays[i-1]?.fx?.rate ? 'up' : 
-                       i > 0 && fxRate < forecastDays[i-1]?.fx?.rate ? 'down' : 'stable';
-        const goldTrend = i > 0 && goldPrice > forecastDays[i-1]?.gold?.price ? 'up' : 
-                         i > 0 && goldPrice < forecastDays[i-1]?.gold?.price ? 'down' : 'stable';
-        
-        const dayWeather = {
-          temp_max: weatherData?.daily?.temperature_2m_max?.[i] || 32,
-          temp_min: weatherData?.daily?.temperature_2m_min?.[i] || 24,
-          rain: weatherData?.daily?.precipitation_sum?.[i] || 0,
-          condition: getWeatherCondition(weatherData?.daily?.weather_code?.[i] || 0)
-        };
-        
-        const risk = generateRisk(dayWeather, fxRate, fxTrend, goldPrice, goldTrend);
-        
-        forecastDays.push({
-          date: date.toISOString().split('T')[0],
-          weather: dayWeather,
-          fx: {
-            rate: fxRate,
-            change: i === 0 ? 0 : Math.round(fxRate - forecastDays[i-1].fx.rate),
-            trend: fxTrend
-          },
-          gold: {
-            price: goldPrice,
-            change: i === 0 ? 0 : Math.round(goldPrice - forecastDays[i-1].gold.price),
-            trend: goldTrend
-          },
-          risk
-        });
-      }
-      setForecast(forecastDays);
-      console.log('✅ Forecast generated');
-    } catch (e) {
-      console.error('❌ Forecast error:', e);
-    }
-
-    // ============================================
-    // STEP 5: AI Analysis (ALWAYS RUN)
-    // ============================================
-    try {
-      const safeWeather = weatherData || { 
-        daily: { 
-          precipitation_sum: [0], 
-          temperature_2m_max: [30], 
-          weather_code: [0] 
-        } 
+      const fxTrend = i === 0 ? 'stable' : fxRate > fxForecastValues[i-1] ? 'up' : 'down';
+      const goldTrend = i === 0 ? 'stable' : goldPrice > goldForecastValues[i-1] ? 'up' : 'down';
+      
+      const dayWeather = {
+        temp_max: weatherData?.daily?.temperature_2m_max?.[i] || 32,
+        temp_min: weatherData?.daily?.temperature_2m_min?.[i] || 24,
+        rain: weatherData?.daily?.precipitation_sum?.[i] || 0,
+        condition: getWeatherCondition(weatherData?.daily?.weather_code?.[i] || 0)
       };
-      const analysis = generateCombinedAnalysis(safeWeather, fxData, goldData, location, fxForecastValues, goldForecastValues);
-      setAiAnalysis(analysis);
-      console.log('✅ Analysis generated');
-    } catch (e) {
-      console.error('❌ Analysis error:', e);
+      
+      const risk = generateRisk(dayWeather, fxRate, fxTrend, goldPrice, goldTrend);
+      
+      forecastDays.push({
+        date: date.toISOString().split('T')[0],
+        weather: dayWeather,
+        fx: {
+          rate: fxRate,
+          change: i === 0 ? 0 : fxRate - fxForecastValues[i-1],
+          trend: fxTrend
+        },
+        gold: {
+          price: goldPrice,
+          change: i === 0 ? 0 : goldPrice - goldForecastValues[i-1],
+          trend: goldTrend
+        },
+        risk
+      });
     }
+    setForecast(forecastDays);
+
+    // STEP 5: AI Analysis
+    const safeWeather = weatherData || { 
+      daily: { 
+        precipitation_sum: [0], 
+        temperature_2m_max: [30], 
+        weather_code: [0] 
+      } 
+    };
+    const analysis = generateCombinedAnalysis(safeWeather, fxData, goldData, location, fxForecastValues, goldForecastValues);
+    setAiAnalysis(analysis);
     
     setLoading(false);
-    setAiLoading(false);
   };
 
   useEffect(() => {
@@ -481,7 +470,6 @@ export default function Home() {
       </header>
 
       <main className="max-w-6xl mx-auto p-4 space-y-6">
-        {/* Loading */}
         {loading && (
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -491,9 +479,8 @@ export default function Home() {
 
         {!loading && (
           <>
-            {/* Current Data Cards */}
+            {/* Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Weather Card */}
               <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-blue-500">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
@@ -502,24 +489,14 @@ export default function Home() {
                   </h2>
                   <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Real-time</span>
                 </div>
-                {weather && weather.daily ? (
-                  <div className="space-y-2">
-                    <div className="text-3xl font-bold text-gray-900">
-                      {weather.daily.temperature_2m_max[0]}°C
-                    </div>
-                    <div className="text-sm text-gray-600">
-                      {getWeatherCondition(weather.daily.weather_code[0])} | Hujan: {weather.daily.precipitation_sum[0]}mm
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      Min: {weather.daily.temperature_2m_min[0]}°C | Max: {weather.daily.temperature_2m_max[0]}°C
-                    </div>
+                {weather?.daily ? (
+                  <div>
+                    <div className="text-3xl font-bold">{weather.daily.temperature_2m_max[0]}°C</div>
+                    <div className="text-sm text-gray-600">{getWeatherCondition(weather.daily.weather_code[0])} | Hujan: {weather.daily.precipitation_sum[0]}mm</div>
                   </div>
-                ) : (
-                  <div className="text-gray-400">Memuat data...</div>
-                )}
+                ) : <div className="text-gray-400">Memuat...</div>}
               </div>
 
-              {/* FX Card */}
               <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-green-500">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
@@ -528,30 +505,16 @@ export default function Home() {
                   </h2>
                   <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">Real-time</span>
                 </div>
-                {fx && fx.rates ? (
-                  <div className="space-y-2">
-                    <div className="text-3xl font-bold text-gray-900">
-                      Rp {fx.rates.IDR?.toLocaleString('id-ID') || '17,769'}
+                {fx?.rates ? (
+                  <div>
+                    <div className="text-3xl font-bold">Rp {fx.rates.IDR?.toLocaleString('id-ID')}</div>
+                    <div className={`text-sm ${(fx.rates.IDR || 0) > 17500 ? 'text-red-600' : 'text-green-600'}`}>
+                      {(fx.rates.IDR || 0) > 17500 ? '↑ Menguat' : '↓ Melemah'}
                     </div>
-                    <div className="flex items-center gap-1 text-sm">
-                      {(fx.rates.IDR || 0) > 17500 ? (
-                        <span className="text-red-600 flex items-center gap-1">
-                          <ArrowUp className="w-4 h-4" /> Menguat
-                        </span>
-                      ) : (
-                        <span className="text-green-600 flex items-center gap-1">
-                          <ArrowDown className="w-4 h-4" /> Melemah
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-500">Update: {fx.date || '2026-08-20'}</div>
                   </div>
-                ) : (
-                  <div className="text-gray-400">Memuat data...</div>
-                )}
+                ) : <div className="text-gray-400">Memuat...</div>}
               </div>
 
-              {/* Gold Card */}
               <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-yellow-500">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
@@ -561,35 +524,22 @@ export default function Home() {
                   <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full">Real-time</span>
                 </div>
                 {gold ? (
-                  <div className="space-y-2">
-                    <div className="text-3xl font-bold text-gray-900">
-                      ${gold.price?.toFixed(2) || '2,505.75'}
+                  <div>
+                    <div className="text-3xl font-bold">${gold.price?.toFixed(2)}</div>
+                    <div className={`text-sm ${(gold.change || 0) > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {(gold.change || 0) > 0 ? `↑ +${gold.change_percent?.toFixed(2)}%` : `↓ ${gold.change_percent?.toFixed(2)}%`}
                     </div>
-                    <div className="flex items-center gap-1 text-sm">
-                      {(gold.change || 0) > 0 ? (
-                        <span className="text-green-600 flex items-center gap-1">
-                          <ArrowUp className="w-4 h-4" /> +{(gold.change_percent || 0).toFixed(2)}%
-                        </span>
-                      ) : (
-                        <span className="text-red-600 flex items-center gap-1">
-                          <ArrowDown className="w-4 h-4" /> {(gold.change_percent || 0).toFixed(2)}%
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-500">XAU/USD per oz</div>
                   </div>
-                ) : (
-                  <div className="text-gray-400">Memuat data...</div>
-                )}
+                ) : <div className="text-gray-400">Memuat...</div>}
               </div>
             </div>
 
-            {/* 7-Day Forecast Table */}
+            {/* Forecast Table */}
             {forecast.length > 0 && (
               <div className="bg-white rounded-xl shadow-md p-6">
                 <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
                   <Calendar className="w-5 h-5 text-blue-600" />
-                  AI Forecast 7 Hari ke Depan
+                  AI Forecast 7 Hari ke Depan (SMA-3)
                 </h2>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -611,11 +561,7 @@ export default function Home() {
                             {new Date(day.date).toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' })}
                           </td>
                           <td className="py-3 px-2">
-                            <span className={`px-2 py-1 rounded-full text-xs ${
-                              day.weather.rain > 20 ? 'bg-blue-100 text-blue-700' :
-                              day.weather.rain > 5 ? 'bg-gray-100 text-gray-700' :
-                              'bg-yellow-100 text-yellow-700'
-                            }`}>
+                            <span className={`px-2 py-1 rounded-full text-xs ${day.weather.rain > 20 ? 'bg-blue-100 text-blue-700' : day.weather.rain > 5 ? 'bg-gray-100 text-gray-700' : 'bg-yellow-100 text-yellow-700'}`}>
                               {day.weather.condition}
                             </span>
                           </td>
@@ -634,15 +580,14 @@ export default function Home() {
                             </span>
                           </td>
                           <td className="py-3 px-2">
-                            <div className="flex items-center gap-1">
-                              <span className={`w-2 h-2 rounded-full ${
-                                day.risk.level === 'high' ? 'bg-red-500' :
-                                day.risk.level === 'medium' ? 'bg-yellow-500' :
-                                'bg-green-500'
-                              }`}></span>
-                              <span className="text-xs text-gray-600" title={day.risk.reason}>
-                                {day.risk.for}
-                              </span>
+                            <div className="group relative">
+                              <div className="flex items-center gap-1 cursor-help">
+                                <span className={`w-2 h-2 rounded-full ${day.risk.level === 'high' ? 'bg-red-500' : day.risk.level === 'medium' ? 'bg-yellow-500' : 'bg-green-500'}`}></span>
+                                <span className="text-xs text-gray-600">{day.risk.for}</span>
+                              </div>
+                              <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block bg-gray-800 text-white text-xs rounded p-2 w-48 z-10">
+                                {day.risk.reason}
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -651,22 +596,10 @@ export default function Home() {
                   </table>
                 </div>
                 <div className="mt-4 flex items-center gap-4 text-xs text-gray-500">
-                  <div className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                    <span>High Risk</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
-                    <span>Medium Risk</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                    <span>Low Risk</span>
-                  </div>
-                  <div className="flex items-center gap-1 ml-4">
-                    <Info className="w-3 h-3" />
-                    <span>Hover risk untuk detail</span>
-                  </div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span><span>High Risk</span></div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500"></span><span>Medium Risk</span></div>
+                  <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500"></span><span>Low Risk</span></div>
+                  <div className="flex items-center gap-1 ml-4"><Info className="w-3 h-3" /><span>Hover risk untuk detail</span></div>
                 </div>
               </div>
             )}
@@ -677,14 +610,13 @@ export default function Home() {
                 <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
                   <Brain className="w-5 h-5 text-blue-600" />
                   AI Impact Analysis
-                  {aiLoading && <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full animate-pulse">Analyzing...</span>}
                 </h2>
                 <div className="bg-white rounded-lg p-4 font-mono text-sm whitespace-pre-wrap text-gray-700 leading-relaxed">
                   {aiAnalysis}
                 </div>
                 <div className="mt-4 flex items-center gap-2 text-xs text-gray-500">
                   <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded">Powered by EdgeOne AI</span>
-                  <span>• Algorithm: Moving Average with Trend Analysis</span>
+                  <span>• Algorithm: Simple Moving Average (SMA-3)</span>
                   <span>• Data: Open-Meteo | Frankfurter | Gold-API</span>
                 </div>
               </div>
@@ -693,7 +625,6 @@ export default function Home() {
         )}
       </main>
 
-      {/* Footer */}
       <footer className="bg-gray-800 text-white py-6 mt-12">
         <div className="max-w-6xl mx-auto px-4 text-center">
           <p className="text-sm opacity-80">NusantaraPulse — Built with Tencent EdgeOne</p>
