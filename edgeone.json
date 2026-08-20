@@ -1,9 +1,6 @@
 {
+  "framework": "nextjs",
   "routes": [
-    {
-      "src": "/api/ai-forecast",
-      "dest": "/api/ai-forecast"
-    },
     {
       "src": "/api/(.*)",
       "dest": "/api/$1"
@@ -12,28 +9,5 @@
       "src": "/(.*)",
       "dest": "/$1"
     }
-  ],
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-cache"
-        }
-      ]
-    },
-    {
-      "source": "/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=3600"
-        }
-      ]
-    }
-  ],
-  "cloudFunctions": {
-    "maxDuration": 30
-  }
+  ]
 }
