@@ -30,22 +30,6 @@ function generateHistoricalData(baseValue: number, days: number, volatility: num
   return data;
 }
 
-function simpleMovingAverage(data: number[], period: number): number[] {
-  const sma: number[] = [];
-  for (let i = 0; i < data.length; i++) {
-    if (i < period - 1) {
-      sma.push(data[i]);
-    } else {
-      let sum = 0;
-      for (let j = 0; j < period; j++) {
-        sum += data[i - j];
-      }
-      sma.push(Math.round(sum / period));
-    }
-  }
-  return sma;
-}
-
 function forecastWithSMA(baseValue: number, days: number, volatility: number): number[] {
   const historical = generateHistoricalData(baseValue, 30, volatility);
   const forecast: number[] = [];
@@ -78,13 +62,19 @@ async function aiAnalyze(
   type: string,
   context: string,
   location: string = 'Indonesia'
-): Promise<{ analysis: string; model: string }> {
+): Promise<{ analysis: string; model: string; debug: string }> {
   const MAKERS_MODELS_KEY = process.env.MAKERS_MODELS_KEY;
+
+  // DEBUG: Log key status (first 10 chars only for security)
+  const keyStatus = MAKERS_MODELS_KEY 
+    ? 'Key found: ' + MAKERS_MODELS_KEY.substring(0, 10) + '...'
+    : 'Key NOT FOUND - using fallback';
 
   if (!MAKERS_MODELS_KEY) {
     return {
       analysis: generateFallbackAnalysis(data, type, context),
-      model: 'fallback-sma'
+      model: 'fallback-sma',
+      debug: keyStatus
     };
   }
 
@@ -106,6 +96,8 @@ async function aiAnalyze(
       '4. LEVEL KEPERCAYAAN PREDIKSI\n\n' +
       'Gunakan format yang rapi dan actionable. Jangan pakai jargon teknis.';
 
+    // Try BUILT-IN model first (free 500K tokens, no vendor key needed)
+    // Model format: @makers/deepseek-v4-flash
     const response = await fetch('https://ai-gateway.edgeone.link/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -124,20 +116,24 @@ async function aiAnalyze(
     });
 
     if (!response.ok) {
-      throw new Error('AI Gateway error: ' + response.status);
+      const errorText = await response.text();
+      throw new Error('AI Gateway error ' + response.status + ': ' + errorText);
     }
 
     const result = await response.json();
     return {
       analysis: result.choices[0].message.content,
-      model: 'deepseek-v4-flash'
+      model: 'deepseek-v4-flash (EdgeOne AI)',
+      debug: keyStatus + ' | API call SUCCESS'
     };
 
   } catch (error) {
-    console.error('AI Analysis error:', error);
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('AI Analysis error:', errorMsg);
     return {
       analysis: generateFallbackAnalysis(data, type, context),
-      model: 'fallback-sma'
+      model: 'fallback-sma',
+      debug: keyStatus + ' | API call FAILED: ' + errorMsg
     };
   }
 }
@@ -237,7 +233,7 @@ export async function POST(request: Request) {
     const forecast = forecastWithSMA(baseValue, days, volatility);
     const confidence = calculateConfidence(historicalData);
 
-    const { analysis, model } = await aiAnalyze(historicalData, type, context, location);
+    const { analysis, model, debug } = await aiAnalyze(historicalData, type, context, location);
 
     const response: ForecastResponse = {
       forecast,
@@ -250,7 +246,8 @@ export async function POST(request: Request) {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache'
+        'Cache-Control': 'no-cache',
+        'X-Debug': debug
       }
     });
 
