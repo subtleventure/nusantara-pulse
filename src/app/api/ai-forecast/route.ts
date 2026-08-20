@@ -1,5 +1,5 @@
 // src/app/api/ai-forecast/route.ts
-// EdgeOne Pages Function — AI Forecasting dengan DeepSeek via AI Gateway
+// EdgeOne Pages Function — AI Forecasting via AI Gateway dengan Provider Key (BYOK)
 
 export const runtime = 'edge';
 
@@ -65,8 +65,7 @@ async function aiAnalyze(
 ): Promise<{ analysis: string; model: string; debug: string }> {
   const MAKERS_MODELS_KEY = process.env.MAKERS_MODELS_KEY;
 
-  // DEBUG: Log key status (first 10 chars only for security)
-  const keyStatus = MAKERS_MODELS_KEY 
+  const keyStatus = MAKERS_MODELS_KEY
     ? 'Key found: ' + MAKERS_MODELS_KEY.substring(0, 10) + '...'
     : 'Key NOT FOUND - using fallback';
 
@@ -96,8 +95,9 @@ async function aiAnalyze(
       '4. LEVEL KEPERCAYAAN PREDIKSI\n\n' +
       'Gunakan format yang rapi dan actionable. Jangan pakai jargon teknis.';
 
-    // Try BUILT-IN model first (free 500K tokens, no vendor key needed)
-    // Model format: @makers/deepseek-v4-flash
+    // === CARA 2: Pakai Provider Key (BYOK) ===
+    // Model format: provider/model-name
+    // User punya OpenAI key bound, jadi pakai: openai/gpt-4o-mini
     const response = await fetch('https://ai-gateway.edgeone.link/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -105,7 +105,7 @@ async function aiAnalyze(
         'Authorization': 'Bearer ' + MAKERS_MODELS_KEY
       },
       body: JSON.stringify({
-        model: '@makers/deepseek-v4-flash',
+        model: 'openai/gpt-4o-mini',
         messages: [
           { role: 'system', content: 'Anda adalah analis ekonomi untuk UMKM Indonesia. Berikan insight praktis dan actionable.' },
           { role: 'user', content: prompt }
@@ -123,7 +123,7 @@ async function aiAnalyze(
     const result = await response.json();
     return {
       analysis: result.choices[0].message.content,
-      model: 'deepseek-v4-flash (EdgeOne AI)',
+      model: 'gpt-4o-mini (OpenAI via EdgeOne)',
       debug: keyStatus + ' | API call SUCCESS'
     };
 
