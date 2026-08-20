@@ -18,7 +18,6 @@ export async function GET(request: Request) {
 
   const errors: string[] = [];
 
-  // 1. Fetch Cuaca (Open-Meteo) — sesuai kota yang dipilih
   let weatherData = null;
   try {
     const weatherRes = await fetch(
@@ -31,7 +30,6 @@ export async function GET(request: Request) {
     errors.push('Cuaca: ' + (e?.message || 'gagal diambil'));
   }
 
-  // 2. Fetch Kurs USD/IDR (Frankfurter) — via server (no CORS)
   let fxData = null;
   try {
     const fxRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=IDR');
@@ -42,7 +40,6 @@ export async function GET(request: Request) {
     errors.push('Kurs: ' + (e?.message || 'gagal diambil'));
   }
 
-  // 3. Fetch Emas (Gold-API) — endpoint resmi: api.gold-api.com/price/{symbol}
   let goldData = null;
   try {
     const goldRes = await fetch('https://api.gold-api.com/price/XAU');
