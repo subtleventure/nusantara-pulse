@@ -3,9 +3,6 @@
 import { useState, useEffect } from 'react';
 import { Cloud, TrendingUp, DollarSign, MapPin, Calendar, ArrowUp, ArrowDown, Brain, Info } from 'lucide-react';
 
-// ============================================
-// TYPES
-// ============================================
 interface WeatherData {
   daily: {
     time: string[];
@@ -52,9 +49,6 @@ interface ForecastDay {
   };
 }
 
-// ============================================
-// LOCATIONS
-// ============================================
 const locations: Record<string, { lat: number; lon: number }> = {
   Jakarta: { lat: -6.2088, lon: 106.8456 },
   Surabaya: { lat: -7.2575, lon: 112.7521 },
@@ -64,9 +58,6 @@ const locations: Record<string, { lat: number; lon: number }> = {
   Yogyakarta: { lat: -7.7956, lon: 110.3695 },
 };
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
 function getWeatherCondition(code: number): string {
   if (code === 0) return 'Cerah';
   if (code <= 3) return 'Berawan';
@@ -79,39 +70,26 @@ function getWeatherCondition(code: number): string {
   return 'Tidak Diketahui';
 }
 
-// ============================================
-// FORECAST METHOD: Simple Moving Average (SMA)
-// Sama persis dengan Microsoft Excel
-// ============================================
-
-// Generate historical data from REAL current value
-// Data bersumber dari nilai real, dengan variasi realistis
 function generateHistoricalData(baseValue: number, days: number, volatility: number): number[] {
   const data: number[] = [];
   let current = baseValue;
   
-  // Generate backward (30 hari ke belakang dari nilai real)
   for (let i = days - 1; i >= 0; i--) {
-    // Variasi berdasarkan volatility (contoh: 0.005 = 0.5% per hari)
-    const change = current * volatility * (Math.sin(i * 0.5) * 0.5); // Pola gelombang, bukan random
-    current = current - change; // Mundur ke belakang
+    const change = current * volatility * (Math.sin(i * 0.5) * 0.5);
+    current = current - change;
     data.unshift(Math.round(current));
   }
   
-  // Pastikan data terakhir = baseValue (nilai real)
   data[data.length - 1] = Math.round(baseValue);
-  
   return data;
 }
 
-// Simple Moving Average — sama dengan Excel
-// SMA = (Data1 + Data2 + ... + DataN) / N
 function simpleMovingAverage(data: number[], period: number): number[] {
   const sma: number[] = [];
   
   for (let i = 0; i < data.length; i++) {
     if (i < period - 1) {
-      sma.push(data[i]); // Belum cukup data, pakai nilai asli
+      sma.push(data[i]);
     } else {
       let sum = 0;
       for (let j = 0; j < period; j++) {
@@ -124,26 +102,18 @@ function simpleMovingAverage(data: number[], period: number): number[] {
   return sma;
 }
 
-// Forecast dengan SMA — hasil TETAP, tidak berubah setiap refresh
 function forecastWithSMA(baseValue: number, days: number, volatility: number): number[] {
-  // Step 1: Generate 30 hari historical data dari nilai real
   const historical = generateHistoricalData(baseValue, 30, volatility);
-  
-  // Step 2: Hitung SMA 3-hari
   const sma = simpleMovingAverage(historical, 3);
-  
-  // Step 3: Forecast 7 hari ke depan dengan SMA
   const forecast: number[] = [];
   const lastData = [...historical];
   
   for (let i = 0; i < days; i++) {
-    // Ambil 3 data terakhir untuk SMA
     const last3 = lastData.slice(-3);
     const sum = last3.reduce((a, b) => a + b, 0);
     const nextValue = Math.round(sum / 3);
-    
     forecast.push(nextValue);
-    lastData.push(nextValue); // Tambahkan ke data untuk perhitungan berikutnya
+    lastData.push(nextValue);
   }
   
   return forecast;
@@ -154,7 +124,6 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
   let riskReason = '';
   let riskFor = '';
   
-  // Weather risk
   if (weather.rain > 50) {
     riskLevel = 'high';
     riskReason = 'Hujan deras mengganggu operasional & delivery';
@@ -165,7 +134,6 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
     riskFor = 'Warung, toko kelontong';
   }
   
-  // FX risk
   if (fxTrend === 'up' && fxRate > 17500) {
     riskLevel = 'high';
     riskReason = 'Kurs naik + sudah tinggi = importir rugi besar';
@@ -177,7 +145,6 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
     riskFor = riskFor ? riskFor + ', UMKM Importir' : 'UMKM Importir';
   }
   
-  // Gold risk
   if (goldTrend === 'up' && goldPrice > 2400) {
     if (riskLevel !== 'high') riskLevel = 'medium';
     riskReason = riskReason ? riskReason + ' | ' : '';
@@ -193,9 +160,6 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
   return { level: riskLevel, reason: riskReason, for: riskFor };
 }
 
-// ============================================
-// AI ANALYSIS: Konsisten dengan Forecast SMA
-// ============================================
 function generateCombinedAnalysis(
   weather: any, 
   fx: FXData, 
@@ -208,7 +172,6 @@ function generateCombinedAnalysis(
   const fxRate = fx?.rates?.IDR || 17769;
   const goldPrice = gold?.price || 2505.75;
   
-  // Calculate trends from SMA forecast
   const fxStart = fxForecast[0];
   const fxEnd = fxForecast[fxForecast.length - 1];
   const fxTrend = fxEnd > fxStart ? 'NAIK' : 'TURUN';
@@ -226,7 +189,6 @@ function generateCombinedAnalysis(
   analysis += `📊 Metode Forecast: Simple Moving Average (SMA-3)\n`;
   analysis += `   Sama dengan metode Microsoft Excel\n\n`;
   
-  // Weather Analysis
   analysis += `🌤️ CUACA (Open-Meteo — Real Data):\n`;
   if (rainDays > 3) {
     analysis += `• Hujan deras diprediksi ${rainDays} hari\n`;
@@ -241,7 +203,6 @@ function generateCombinedAnalysis(
   }
   analysis += `\n`;
   
-  // FX Analysis — KONSISTEN DENGAN SMA FORECAST
   analysis += `💱 KURS USD/IDR (SMA-3 Forecast):\n`;
   analysis += `• Saat ini: Rp ${fxRate.toLocaleString('id-ID')}\n`;
   analysis += `• Forecast 7 hari: ${fxTrend} ${fxChangePercent}%\n`;
@@ -260,7 +221,6 @@ function generateCombinedAnalysis(
   }
   analysis += `\n`;
   
-  // Gold Analysis — KONSISTEN DENGAN SMA FORECAST
   analysis += `🪙 HARGA EMAS (SMA-3 Forecast):\n`;
   analysis += `• Saat ini: $${goldPrice.toFixed(2)}/oz\n`;
   analysis += `• Forecast 7 hari: ${goldTrend} ${goldChangePercent}%\n`;
@@ -277,7 +237,6 @@ function generateCombinedAnalysis(
   }
   analysis += `\n`;
   
-  // Combined Recommendations
   analysis += `🎯 REKOMENDASI STRATEGIS:\n`;
   
   if (fxTrend === 'TURUN' && goldTrend === 'TURUN') {
@@ -309,9 +268,6 @@ function generateCombinedAnalysis(
   return analysis;
 }
 
-// ============================================
-// MAIN COMPONENT
-// ============================================
 export default function Home() {
   const [location, setLocation] = useState('Jakarta');
   const [weather, setWeather] = useState<WeatherData | null>(null);
@@ -324,7 +280,6 @@ export default function Home() {
   const fetchData = async () => {
     setLoading(true);
     
-    // STEP 1: Fetch Weather
     let weatherData = null;
     try {
       const { lat, lon } = locations[location];
@@ -339,7 +294,6 @@ export default function Home() {
       console.error('Weather error:', e);
     }
 
-    // STEP 2: Fetch FX
     let fxData: FXData = { rates: { IDR: 17769 }, date: '2026-08-20' };
     try {
       const fxRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=IDR');
@@ -353,7 +307,6 @@ export default function Home() {
       setFx(fxData);
     }
 
-    // STEP 3: Fetch Gold
     let goldData: GoldData = { price: 2505.75, change: 15.20, change_percent: 0.61 };
     try {
       const goldRes = await fetch('https://www.goldapi.io/api/XAU/USD', {
@@ -377,13 +330,10 @@ export default function Home() {
       setGold(goldData);
     }
 
-    // STEP 4: Generate Forecast dengan SMA (TETAP, tidak berubah)
     const baseFx = fxData.rates.IDR;
     const baseGold = goldData.price;
     
-    // FX: SMA-3 dengan volatility 0.5%
     const fxForecastValues = forecastWithSMA(baseFx, 7, 0.005);
-    // Gold: SMA-3 dengan volatility 1%
     const goldForecastValues = forecastWithSMA(baseGold, 7, 0.01);
 
     const forecastDays: ForecastDay[] = [];
@@ -424,7 +374,6 @@ export default function Home() {
     }
     setForecast(forecastDays);
 
-    // STEP 5: AI Analysis
     const safeWeather = weatherData || { 
       daily: { 
         precipitation_sum: [0], 
@@ -444,7 +393,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-4 shadow-lg">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -479,7 +427,6 @@ export default function Home() {
 
         {!loading && (
           <>
-            {/* Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-blue-500">
                 <div className="flex items-center justify-between mb-4">
@@ -534,7 +481,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Forecast Table */}
             {forecast.length > 0 && (
               <div className="bg-white rounded-xl shadow-md p-6">
                 <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
@@ -604,7 +550,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* AI Analysis */}
             {aiAnalysis && (
               <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl shadow-md p-6 border border-blue-200">
                 <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
