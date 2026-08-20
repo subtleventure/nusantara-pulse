@@ -1,24 +1,9 @@
 // src/app/api/ai-recommendations/route.ts
-// EdgeOne Pages Function — AI Forecast + Recommendations
 
 interface ForecastData {
-  weather: {
-    rainDays: number;
-    tempMax: number;
-    condition: string;
-  };
-  fx: {
-    current: number;
-    forecastStart: number;
-    forecastEnd: number;
-    trend: string;
-  };
-  gold: {
-    current: number;
-    forecastStart: number;
-    forecastEnd: number;
-    trend: string;
-  };
+  weather: { rainDays: number; tempMax: number; condition: string; };
+  fx: { current: number; forecastStart: number; forecastEnd: number; trend: string; };
+  gold: { current: number; forecastStart: number; forecastEnd: number; trend: string; };
   location: string;
 }
 
@@ -27,17 +12,15 @@ export async function POST(request: Request) {
     const body: ForecastData = await request.json();
     const { weather, fx, gold, location } = body;
 
-    const MAKERS_MODELS_KEY = process.env.MAKERS_MODELS_KEY || '';
+    // Coba pakai MAKERS_MODELS_KEY dulu
+    let apiKey = process.env.MAKERS_MODELS_KEY || '';
+    let modelName = 'openai/gpt-4o-mini';
+    let useBuiltIn = false;
 
-    if (!MAKERS_MODELS_KEY) {
-      console.error('MAKERS_MODELS_KEY tidak ditemukan');
-      return new Response(
-        JSON.stringify({ 
-          recommendations: '⚠️ AI tidak tersedia: API key tidak ditemukan.',
-          aiForecast: null
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
+    // Kalau key kosong, coba pakai built-in model (tanpa key)
+    if (!apiKey) {
+      useBuiltIn = true;
+      modelName = '@makers/gpt-4o-mini'; // Built-in model
     }
 
     const safeNumber = (val: any, digits: number = 0): string => {
@@ -80,14 +63,19 @@ export async function POST(request: Request) {
       '4. [Rekomendasi umum]' + String.fromCharCode(10) + String.fromCharCode(10) +
       'Gunakan emoji, bahasa Indonesia, dan actionable.';
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+
+    if (!useBuiltIn) {
+      headers['Authorization'] = 'Bearer ' + apiKey;
+    }
+
     const response = await fetch('https://ai-gateway.edgeone.link/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + MAKERS_MODELS_KEY
-      },
+      headers: headers,
       body: JSON.stringify({
-        model: 'openai/gpt-4o-mini',
+        model: modelName,
         messages: [
           { role: 'system', content: 'Anda adalah analis ekonomi untuk UMKM Indonesia. Berikan forecast dan rekomendasi praktis.' },
           { role: 'user', content: prompt }
@@ -102,7 +90,7 @@ export async function POST(request: Request) {
       console.error('AI Gateway error:', response.status, errorText);
       return new Response(
         JSON.stringify({ 
-          recommendations: '⚠️ AI tidak tersedia: Gateway error ' + response.status,
+          recommendations: '⚠️ AI tidak tersedia: Gateway error ' + response.status + ' - ' + errorText,
           aiForecast: null
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
