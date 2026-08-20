@@ -160,15 +160,7 @@ function generateRisk(weather: any, fxRate: number, fxTrend: string, goldPrice: 
   return { level: riskLevel, reason: riskReason, for: riskFor };
 }
 
-// Fetch AI recommendations from EdgeOne API
-async function fetchAIRecommendations(
-  weather: any,
-  fx: FXData,
-  gold: GoldData,
-  fxForecast: number[],
-  goldForecast: number[],
-  loc: string
-): Promise<string> {
+async function fetchAIRecommendations(weather: any, fx: FXData, gold: GoldData, fxForecast: number[], goldForecast: number[], loc: string): Promise<string> {
   try {
     const payload = {
       weather: {
@@ -190,13 +182,7 @@ async function fetchAIRecommendations(
       },
       location: loc
     };
-
-    const res = await fetch('/api/ai-recommendations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
+    const res = await fetch('/api/ai-recommendations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     if (!res.ok) return '';
     const data = await res.json();
     return data.recommendations || '';
@@ -426,26 +412,11 @@ export default function Home() {
         weather_code: [0] 
       } 
     };
-
-    // Generate base analysis (SMA forecast data)
     const baseAnalysis = generateCombinedAnalysis(safeWeather, fxData, goldData, location, fxForecastValues, goldForecastValues);
-
-    // Fetch AI recommendations based on forecast data
-    const aiRecs = await fetchAIRecommendations(
-      safeWeather,
-      fxData,
-      goldData,
-      fxForecastValues,
-      goldForecastValues,
-      location
-    );
-
-    // Combine: base analysis + AI recommendations
+    const aiRecs = await fetchAIRecommendations(safeWeather, fxData, goldData, fxForecastValues, goldForecastValues, location);
     let finalAnalysis = baseAnalysis;
     if (aiRecs && aiRecs !== '') {
-      finalAnalysis += '
-
-' + aiRecs;
+      finalAnalysis = finalAnalysis + String.fromCharCode(10) + String.fromCharCode(10) + aiRecs;
       setAiModel(aiRecs.includes('(AI)') ? 'gpt-4o-mini (OpenAI via EdgeOne)' : 'SMA-3');
     }
     setAiAnalysis(finalAnalysis);
