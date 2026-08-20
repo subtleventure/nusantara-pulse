@@ -152,8 +152,8 @@ function generateFallbackAnalysis(data: number[], type: string, context: string)
   const change = ((lastValue - firstValue) / firstValue) * 100;
   const trend = change > 0 ? 'NAIK' : 'TURUN';
 
-  const analyses: Record<string, string> = {
-    weather: `🧠 ANALISIS AI CUACA
+  if (type === 'weather') {
+    return `🧠 ANALISIS AI CUACA
 ═══════════════════════════════════════
 
 📊 TREN: ${trend} ${Math.abs(change).toFixed(1)}%
@@ -167,48 +167,66 @@ REKOMENDASI:
 1. 🌦️ Monitor forecast harian
 2. 📦 Stok barang musiman 3-5 hari sebelumnya
 3. 🚚 Siapkan delivery backup
-4. 💰 Promo cuaca panas/hujan sesuai kondisi`,
+4. 💰 Promo cuaca panas/hujan sesuai kondisi`;
+  }
 
-    fx: `🧠 ANALISIS AI KURS USD/IDR
+  if (type === 'fx') {
+    const fxRisks = change > 0
+      ? '• Importir: Bahan baku mahal, margin menipis
+• Harga barang import naik 2-3%
+• Pinjaman USD lebih mahal'
+      : '• Exportir: Produk lebih mahal di pasar global
+• Pendapatan export dalam IDR turun
+• Kompetitivitas menurun';
+
+    const fxRec1 = change > 0 ? '🔒 Lock harga dengan supplier' : '📈 Tingkatkan produksi untuk export';
+    const fxRec2 = change > 0 ? '💱 Hedging dengan forward contract' : '🌍 Cari pasar baru yang stabil';
+
+    return `🧠 ANALISIS AI KURS USD/IDR
 ═══════════════════════════════════════
 
 📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%
 • Saat ini: Rp ${lastValue.toLocaleString('id-ID')}
 
 RISIKO UMKM:
-${change > 0 ? '• Importir: Bahan baku mahal, margin menipis
-• Harga barang import naik 2-3%
-• Pinjaman USD lebih mahal' : '• Exportir: Produk lebih mahal di pasar global
-• Pendapatan export dalam IDR turun
-• Kompetitivitas menurun'}
+${fxRisks}
 
 REKOMENDASI:
-1. ${change > 0 ? '🔒 Lock harga dengan supplier' : '📈 Tingkatkan produksi untuk export'}
-2. ${change > 0 ? '💱 Hedging dengan forward contract' : '🌍 Cari pasar baru yang stabil'}
+1. ${fxRec1}
+2. ${fxRec2}
 3. 📊 Review pricing strategy mingguan
-4. 💵 Siapkan cash buffer 15-20%`,
+4. 💵 Siapkan cash buffer 15-20%`;
+  }
 
-    gold: `🧠 ANALISIS AI HARGA EMAS
+  if (type === 'gold') {
+    const goldRisks = change > 0
+      ? '• Toko emas: Restock mahal, margin tertekan
+• Pembeli menunda pembelian
+• Demand perhiasan turun'
+      : '• Toko emas: Stok lama rugi
+• Investor wait-and-see
+• Margin tipis saat rebound';
+
+    const goldRec1 = change > 0 ? '💰 JUAL stok lama (untung 8-15%)' : '🪙 BELI stok baru untuk persiapan';
+    const goldRec2 = change > 0 ? '⏰ Tunda restock 1-2 minggu' : '📈 Restock agresif untuk margin';
+
+    return `🧠 ANALISIS AI HARGA EMAS
 ═══════════════════════════════════════
 
 📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%
 • Saat ini: $${lastValue.toFixed(2)}/oz
 
 RISIKO UMKM:
-${change > 0 ? '• Toko emas: Restock mahal, margin tertekan
-• Pembeli menunda pembelian
-• Demand perhiasan turun' : '• Toko emas: Stok lama rugi
-• Investor wait-and-see
-• Margin tipis saat rebound'}
+${goldRisks}
 
 REKOMENDASI:
-1. ${change > 0 ? '💰 JUAL stok lama (untung 8-15%)' : '🪙 BELI stok baru untuk persiapan'}
-2. ${change > 0 ? '⏰ Tunda restock 1-2 minggu' : '📈 Restock agresif untuk margin'}
+1. ${goldRec1}
+2. ${goldRec2}
 3. 💳 Promo cicilan menarik pembeli
-4. 📰 Monitor berita geopolitik & kebijakan The Fed`
-  };
+4. 📰 Monitor berita geopolitik & kebijakan The Fed`;
+  }
 
-  return analyses[type] || 'Analisis tidak tersedia.';
+  return 'Analisis tidak tersedia.';
 }
 
 export async function POST(request: Request) {
