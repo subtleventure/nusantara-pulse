@@ -18,7 +18,18 @@ interface ForecastResponse {
   model: string;
 }
 
-// Simple Moving Average (SMA) — metode Excel yang Anda pakai
+function generateHistoricalData(baseValue: number, days: number, volatility: number): number[] {
+  const data: number[] = [];
+  let current = baseValue;
+  for (let i = days - 1; i >= 0; i--) {
+    const change = current * volatility * (Math.sin(i * 0.5) * 0.5);
+    current = current - change;
+    data.unshift(Math.round(current));
+  }
+  data[data.length - 1] = Math.round(baseValue);
+  return data;
+}
+
 function simpleMovingAverage(data: number[], period: number): number[] {
   const sma: number[] = [];
   for (let i = 0; i < data.length; i++) {
@@ -36,20 +47,9 @@ function simpleMovingAverage(data: number[], period: number): number[] {
 }
 
 function forecastWithSMA(baseValue: number, days: number, volatility: number): number[] {
-  const historical: number[] = [];
-  let current = baseValue;
-  
-  for (let i = days - 1; i >= 0; i--) {
-    const change = current * volatility * (Math.sin(i * 0.5) * 0.5);
-    current = current - change;
-    historical.unshift(Math.round(current));
-  }
-  
-  historical[historical.length - 1] = Math.round(baseValue);
-  
+  const historical = generateHistoricalData(baseValue, 30, volatility);
   const forecast: number[] = [];
   const lastData = [...historical];
-  
   for (let i = 0; i < days; i++) {
     const last3 = lastData.slice(-3);
     const sum = last3.reduce((a, b) => a + b, 0);
@@ -57,7 +57,6 @@ function forecastWithSMA(baseValue: number, days: number, volatility: number): n
     forecast.push(nextValue);
     lastData.push(nextValue);
   }
-  
   return forecast;
 }
 
@@ -67,7 +66,6 @@ function calculateConfidence(data: number[]): number {
   const variance = data.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / data.length;
   const stdDev = Math.sqrt(variance);
   const cv = stdDev / mean;
-  
   if (cv < 0.01) return 0.95;
   if (cv < 0.02) return 0.85;
   if (cv < 0.05) return 0.75;
@@ -75,31 +73,29 @@ function calculateConfidence(data: number[]): number {
   return 0.55;
 }
 
-// AI Analysis via EdgeOne AI Gateway — DeepSeek (gratis 500K token/bulan)
 async function aiAnalyze(
-  data: number[], 
-  type: string, 
+  data: number[],
+  type: string,
   context: string,
   location: string = 'Indonesia'
 ): Promise<{ analysis: string; model: string }> {
-  
   const MAKERS_MODELS_KEY = process.env.MAKERS_MODELS_KEY;
-  
+
   if (!MAKERS_MODELS_KEY) {
     return {
       analysis: generateFallbackAnalysis(data, type, context),
       model: 'fallback-sma'
     };
   }
-  
+
   try {
     const lastValue = data[data.length - 1];
     const firstValue = data[0];
     const change = ((lastValue - firstValue) / firstValue) * 100;
     const trend = change > 0 ? 'NAIK' : 'TURUN';
-    
+
     const prompt = `Anda adalah analis ekonomi senior untuk UMKM Indonesia di kota ${location}.
-    
+
 Data ${type} 30 hari terakhir: ${JSON.stringify(data.slice(-30))}
 Tren: ${trend} ${Math.abs(change).toFixed(2)}%
 Nilai terakhir: ${lastValue}
@@ -130,17 +126,17 @@ Gunakan format yang rapi dan actionable. Jangan pakai jargon teknis.`;
         temperature: 0.7
       })
     });
-    
+
     if (!response.ok) {
       throw new Error(`AI Gateway error: ${response.status}`);
     }
-    
+
     const result = await response.json();
     return {
       analysis: result.choices[0].message.content,
       model: 'deepseek-v4-flash'
     };
-    
+
   } catch (error) {
     console.error('AI Analysis error:', error);
     return {
@@ -155,15 +151,63 @@ function generateFallbackAnalysis(data: number[], type: string, context: string)
   const firstValue = data[0];
   const change = ((lastValue - firstValue) / firstValue) * 100;
   const trend = change > 0 ? 'NAIK' : 'TURUN';
-  
+
   const analyses: Record<string, string> = {
-    weather: `🧠 ANALISIS AI CUACA\n═══════════════════════════════════════\n\n📊 TREN: ${trend} ${Math.abs(change).toFixed(1)}%\n\nRISIKO UMKM:\n• Cuaca ekstrem bisa ganggu operasional\n• Demand barang musiman fluktuatif\n• Delivery terganggu saat hujan deras\n\nREKOMENDASI:\n1. 🌦️ Monitor forecast harian\n2. 📦 Stok barang musiman 3-5 hari sebelumnya\n3. 🚚 Siapkan delivery backup\n4. 💰 Promo cuaca panas/hujan sesuai kondisi`,
+    weather: `🧠 ANALISIS AI CUACA
+═══════════════════════════════════════
 
-    fx: `🧠 ANALISIS AI KURS USD/IDR\n═══════════════════════════════════════\n\n📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%\n• Saat ini: Rp ${lastValue.toLocaleString('id-ID')}\n\nRISIKO UMKM:\n${change > 0 ? '• Importir: Bahan baku mahal, margin menipis\n• Harga barang import naik 2-3%\n• Pinjaman USD lebih mahal' : '• Exportir: Produk lebih mahal di pasar global\n• Pendapatan export dalam IDR turun\n• Kompetitivitas menurun'}\n\nREKOMENDASI:\n1. ${change > 0 ? '🔒 Lock harga dengan supplier' : '📈 Tingkatkan produksi untuk export'}\n2. ${change > 0 ? '💱 Hedging dengan forward contract' : '🌍 Cari pasar baru yang stabil'}\n3. 📊 Review pricing strategy mingguan\n4. 💵 Siapkan cash buffer 15-20%`,
+📊 TREN: ${trend} ${Math.abs(change).toFixed(1)}%
 
-    gold: `🧠 ANALISIS AI HARGA EMAS\n═══════════════════════════════════════\n\n📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%\n• Saat ini: $${lastValue.toFixed(2)}/oz\n\nRISIKO UMKM:\n${change > 0 ? '• Toko emas: Restock mahal, margin tertekan\n• Pembeli menunda pembelian\n• Demand perhiasan turun' : '• Toko emas: Stok lama rugi\n• Investor wait-and-see\n• Margin tipis saat rebound'}\n\nREKOMENDASI:\n1. ${change > 0 ? '💰 JUAL stok lama (untung 8-15%)' : '🪙 BELI stok baru untuk persiapan'}\n2. ${change > 0 ? '⏰ Tunda restock 1-2 minggu' : '📈 Restock agresif untuk margin'}\n3. 💳 Promo cicilan menarik pembeli\n4. 📰 Monitor berita geopolitik & kebijakan The Fed`
+RISIKO UMKM:
+• Cuaca ekstrem bisa ganggu operasional
+• Demand barang musiman fluktuatif
+• Delivery terganggu saat hujan deras
+
+REKOMENDASI:
+1. 🌦️ Monitor forecast harian
+2. 📦 Stok barang musiman 3-5 hari sebelumnya
+3. 🚚 Siapkan delivery backup
+4. 💰 Promo cuaca panas/hujan sesuai kondisi`,
+
+    fx: `🧠 ANALISIS AI KURS USD/IDR
+═══════════════════════════════════════
+
+📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%
+• Saat ini: Rp ${lastValue.toLocaleString('id-ID')}
+
+RISIKO UMKM:
+${change > 0 ? '• Importir: Bahan baku mahal, margin menipis
+• Harga barang import naik 2-3%
+• Pinjaman USD lebih mahal' : '• Exportir: Produk lebih mahal di pasar global
+• Pendapatan export dalam IDR turun
+• Kompetitivitas menurun'}
+
+REKOMENDASI:
+1. ${change > 0 ? '🔒 Lock harga dengan supplier' : '📈 Tingkatkan produksi untuk export'}
+2. ${change > 0 ? '💱 Hedging dengan forward contract' : '🌍 Cari pasar baru yang stabil'}
+3. 📊 Review pricing strategy mingguan
+4. 💵 Siapkan cash buffer 15-20%`,
+
+    gold: `🧠 ANALISIS AI HARGA EMAS
+═══════════════════════════════════════
+
+📊 TREN: ${trend} ${Math.abs(change).toFixed(2)}%
+• Saat ini: $${lastValue.toFixed(2)}/oz
+
+RISIKO UMKM:
+${change > 0 ? '• Toko emas: Restock mahal, margin tertekan
+• Pembeli menunda pembelian
+• Demand perhiasan turun' : '• Toko emas: Stok lama rugi
+• Investor wait-and-see
+• Margin tipis saat rebound'}
+
+REKOMENDASI:
+1. ${change > 0 ? '💰 JUAL stok lama (untung 8-15%)' : '🪙 BELI stok baru untuk persiapan'}
+2. ${change > 0 ? '⏰ Tunda restock 1-2 minggu' : '📈 Restock agresif untuk margin'}
+3. 💳 Promo cicilan menarik pembeli
+4. 📰 Monitor berita geopolitik & kebijakan The Fed`
   };
-  
+
   return analyses[type] || 'Analisis tidak tersedia.';
 }
 
@@ -171,30 +215,28 @@ export async function POST(request: Request) {
   try {
     const body: ForecastRequest = await request.json();
     const { type, historicalData, days, context = '', location = 'Indonesia' } = body;
-    
+
     if (!historicalData || historicalData.length < 2) {
       return new Response(
         JSON.stringify({ error: 'Need at least 2 data points' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
-    
-    // Generate forecast pakai SMA-3 (sama dengan frontend Anda)
+
     const baseValue = historicalData[historicalData.length - 1];
     const volatility = type === 'fx' ? 0.005 : type === 'gold' ? 0.01 : 0.02;
     const forecast = forecastWithSMA(baseValue, days, volatility);
     const confidence = calculateConfidence(historicalData);
-    
-    // AI Analysis via EdgeOne AI Gateway
+
     const { analysis, model } = await aiAnalyze(historicalData, type, context, location);
-    
+
     const response: ForecastResponse = {
       forecast,
       confidence,
       analysis,
       model
     };
-    
+
     return new Response(JSON.stringify(response), {
       status: 200,
       headers: {
@@ -202,7 +244,7 @@ export async function POST(request: Request) {
         'Cache-Control': 'no-cache'
       }
     });
-    
+
   } catch (error) {
     console.error('Forecast error:', error);
     return new Response(
