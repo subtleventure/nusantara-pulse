@@ -42,9 +42,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState('');
+  const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [weatherDays, setWeatherDays] = useState<WeatherDay[]>([]);
-  const [fxCurrent, setFxCurrent] = useState(0);
-  const [goldCurrent, setGoldCurrent] = useState(0);
+  const [fxCurrent, setFxCurrent] = useState<number | null>(null);
+  const [goldCurrent, setGoldCurrent] = useState<number | null>(null);
   const [aiRecs, setAiRecs] = useState('');
   const [aiError, setAiError] = useState('');
 
@@ -55,66 +56,89 @@ export default function Home() {
   async function fetchAllData() {
     setLoading(true);
     setError('');
+    setDataWarnings([]);
+    setWeatherDays([]);
+    setFxCurrent(null);
+    setGoldCurrent(null);
+
     try {
       // Fetch semua data via proxy API (fix CORS)
       const res = await fetch('/api/proxy-data');
-      if (!res.ok) throw new Error('Gagal fetch data');
+      if (!res.ok) throw new Error('Gagal fetch data (status ' + res.status + ')');
       const data = await res.json();
 
-      // Parse Weather
-      const daily = data.weather.daily;
-      const days: WeatherDay[] = [];
+      if (data.errors && data.errors.length > 0) {
+        setDataWarnings(data.errors);
+      }
+
       let rainDays = 0;
       let maxTemp = 0;
-      for (let i = 0; i < 7; i++) {
-        const code = daily.weather_code[i];
-        const rain = daily.precipitation_sum[i] || 0;
-        const temp = daily.temperature_2m_max[i];
-        if (rain > 0) rainDays++;
-        if (temp > maxTemp) maxTemp = temp;
-        days.push({
-          date: daily.time[i],
-          tempMax: temp,
-          rain: rain,
-          condition: weatherCodes[code] || 'Tidak Diketahui'
-        });
-      }
-      setWeatherDays(days);
+      let firstCondition = 'N/A';
+      let days: WeatherDay[] = [];
 
-      // Parse FX
-      const fxRate = data.fx.rates?.IDR || 15800;
-      setFxCurrent(fxRate);
-
-      // Parse Gold
-      const goldPrice = data.gold.price || 2400;
-      setGoldCurrent(goldPrice);
-
-      // Hitung SMA-3 untuk data awal (sebelum AI)
-      const fxSMA = calculateSMA([fxRate, fxRate * 0.995, fxRate * 1.005]);
-      const goldSMA = calculateSMA([goldPrice, goldPrice * 0.99, goldPrice * 1.01]);
-
-      // Kirim ke AI
-      const forecastData: ForecastData = {
-        weather: {
-          rainDays,
-          tempMax: maxTemp,
-          condition: days[0].condition
-        },
-        fx: {
-          current: fxRate,
-          forecastStart: fxRate,
-          forecastEnd: fxSMA,
-          trend: fxSMA > fxRate ? 'NAIK' : 'TURUN'
-        },
-        gold: {
-          current: goldPrice,
-          forecastStart: goldPrice,
-          forecastEnd: goldSMA,
-          trend: goldSMA > goldPrice ? 'NAIK' : 'TURUN'
+      // Parse Weather (kalau ada)
+      if (data.weather && data.weather.daily) {
+        const daily = data.weather.daily;
+        for (let i = 0; i < 7; i++) {
+          const code = daily.weather_code[i];
+          const rain = daily.precipitation_sum[i] || 0;
+          const temp = daily.temperature_2m_max[i];
+          if (rain > 0) rainDays++;
+          if (temp > maxTemp) maxTemp = temp;
+          days.push({
+            date: daily.time[i],
+            tempMax: temp,
+            rain: rain,
+            condition: weatherCodes[code] || 'Tidak Diketahui'
+          });
         }
-      };
+        setWeatherDays(days);
+        firstCondition = days[0]?.condition || 'N/A';
+      }
 
-      await fetchAIRecommendations(forecastData, location);
+      // Parse FX (kalau ada)
+      let fxRate: number | null = null;
+      if (data.fx && data.fx.rates && typeof data.fx.rates.IDR === 'number') {
+        fxRate = data.fx.rates.IDR;
+        setFxCurrent(fxRate);
+      }
+
+      // Parse Gold (kalau ada) — endpoint baru: { price: number, ... }
+      let goldPrice: number | null = null;
+      if (data.gold && typeof data.gold.price === 'number') {
+        goldPrice = data.gold.price;
+        setGoldCurrent(goldPrice);
+      }
+
+      // Kirim ke AI hanya kalau minimal ada satu data real yang berhasil diambil
+      if (fxRate !== null || goldPrice !== null || days.length > 0) {
+        const fxSMA = fxRate !== null ? calculateSMA([fxRate, fxRate * 0.995, fxRate * 1.005]) : 0;
+        const goldSMA = goldPrice !== null ? calculateSMA([goldPrice, goldPrice * 0.99, goldPrice * 1.01]) : 0;
+
+        const forecastData: ForecastData = {
+          weather: {
+            rainDays,
+            tempMax: maxTemp,
+            condition: firstCondition
+          },
+          fx: {
+            current: fxRate ?? 0,
+            forecastStart: fxRate ?? 0,
+            forecastEnd: fxSMA,
+            trend: fxSMA > (fxRate ?? 0) ? 'NAIK' : 'TURUN'
+          },
+          gold: {
+            current: goldPrice ?? 0,
+            forecastStart: goldPrice ?? 0,
+            forecastEnd: goldSMA,
+            trend: goldSMA > (goldPrice ?? 0) ? 'NAIK' : 'TURUN'
+          }
+        };
+
+        await fetchAIRecommendations(forecastData, location);
+      } else {
+        setAiError('Semua sumber data real-time gagal diambil, AI tidak bisa dijalankan.');
+      }
 
     } catch (err: any) {
       setError('Gagal memuat data: ' + err.message);
@@ -178,6 +202,16 @@ export default function Home() {
       <h1 style={{ textAlign: 'center' }}>NusantaraPulse</h1>
       <p style={{ textAlign: 'center', color: '#666' }}>Dashboard UMKM Indonesia</p>
 
+      {/* Data Warnings */}
+      {dataWarnings.length > 0 && (
+        <div style={{ border: '1px solid #f5c518', background: '#fffbea', borderRadius: 8, padding: 12, marginBottom: 16, color: '#8a6500' }}>
+          <strong>⚠️ Sebagian data real-time gagal diambil:</strong>
+          <ul style={{ margin: '8px 0 0 20px' }}>
+            {dataWarnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
+
       {/* Location Selector */}
       <div style={{ marginBottom: 20, textAlign: 'center' }}>
         <label>Lokasi: </label>
@@ -203,38 +237,50 @@ export default function Home() {
       {/* Weather */}
       <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2>Cuaca 7 Hari - {location}</h2>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ background: '#f0f0f0' }}>
-              <th style={{ padding: 8, border: '1px solid #ddd' }}>Tanggal</th>
-              <th style={{ padding: 8, border: '1px solid #ddd' }}>Kondisi</th>
-              <th style={{ padding: 8, border: '1px solid #ddd' }}>Suhu Max</th>
-              <th style={{ padding: 8, border: '1px solid #ddd' }}>Hujan (mm)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {weatherDays.map((day, i) => (
-              <tr key={i}>
-                <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.date}</td>
-                <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.condition}</td>
-                <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.tempMax}C</td>
-                <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.rain}</td>
+        {weatherDays.length > 0 ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: '#f0f0f0' }}>
+                <th style={{ padding: 8, border: '1px solid #ddd' }}>Tanggal</th>
+                <th style={{ padding: 8, border: '1px solid #ddd' }}>Kondisi</th>
+                <th style={{ padding: 8, border: '1px solid #ddd' }}>Suhu Max</th>
+                <th style={{ padding: 8, border: '1px solid #ddd' }}>Hujan (mm)</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {weatherDays.map((day, i) => (
+                <tr key={i}>
+                  <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.date}</td>
+                  <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.condition}</td>
+                  <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.tempMax}C</td>
+                  <td style={{ padding: 8, border: '1px solid #ddd' }}>{day.rain}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p style={{ color: '#999' }}>Data cuaca tidak tersedia saat ini</p>
+        )}
       </div>
 
       {/* FX */}
       <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2>Kurs USD/IDR</h2>
-        <p style={{ fontSize: 24, fontWeight: 'bold' }}>Rp {fxCurrent.toLocaleString('id-ID')}</p>
+        {fxCurrent !== null ? (
+          <p style={{ fontSize: 24, fontWeight: 'bold' }}>Rp {fxCurrent.toLocaleString('id-ID')}</p>
+        ) : (
+          <p style={{ color: '#999' }}>Data kurs tidak tersedia saat ini</p>
+        )}
       </div>
 
       {/* Gold */}
       <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2>Harga Emas</h2>
-        <p style={{ fontSize: 24, fontWeight: 'bold' }}>${goldCurrent.toFixed(2)} / oz</p>
+        {goldCurrent !== null ? (
+          <p style={{ fontSize: 24, fontWeight: 'bold' }}>${goldCurrent.toFixed(2)} / oz</p>
+        ) : (
+          <p style={{ color: '#999' }}>Data emas tidak tersedia saat ini</p>
+        )}
       </div>
 
       {/* AI Analysis */}
