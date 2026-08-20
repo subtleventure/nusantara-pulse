@@ -1,6 +1,10 @@
 {
   "routes": [
     {
+      "src": "/api/ai-forecast",
+      "dest": "/api/ai-forecast"
+    },
+    {
       "src": "/api/(.*)",
       "dest": "/api/$1"
     },
@@ -10,6 +14,15 @@
     }
   ],
   "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
     {
       "source": "/(.*)",
       "headers": [
