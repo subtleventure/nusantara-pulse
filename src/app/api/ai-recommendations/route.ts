@@ -1,66 +1,98 @@
 // src/app/api/ai-recommendations/route.ts
+// Rekomendasi AI di-cache per kota per hari (WIB) — AI Gateway hanya dipanggil
+// 1x per kota per hari, sisanya pakai hasil cache. Hemat kuota token.
 
-interface ForecastData {
-  weather: { rainDays: number; tempMax: number; condition: string; };
-  fx: { current: number; forecastStart: number; forecastEnd: number; trend: string; };
-  gold: { current: number; forecastStart: number; forecastEnd: number; trend: string; };
-  location: string;
+import { unstable_cache } from 'next/cache';
+import { getDailyRawData, getTodayKeyWIB } from '../../lib/dailyData';
+
+const weatherCodes: Record<number, string> = {
+  0: 'Cerah', 1: 'Cerah Berawan', 2: 'Berawan', 3: 'Mendung',
+  45: 'Berkabut', 48: 'Berkabut', 51: 'Gerimis', 53: 'Gerimis',
+  55: 'Gerimis', 61: 'Hujan Ringan', 63: 'Hujan', 65: 'Hujan Lebat',
+  80: 'Hujan Ringan', 81: 'Hujan', 82: 'Hujan Lebat', 95: 'Badai',
+  96: 'Badai Petir', 99: 'Badai Petir'
+};
+
+function safeNumber(val: any, digits: number = 0): string {
+  if (typeof val !== 'number' || isNaN(val)) return 'N/A';
+  if (digits > 0) return val.toFixed(digits);
+  return Math.round(val).toLocaleString('id-ID');
 }
 
-export async function POST(request: Request) {
-  try {
-    const body: ForecastData = await request.json();
-    const { weather, fx, gold, location } = body;
+function calculateSMA(values: number[]): number {
+  const sum = values.reduce((a, b) => a + b, 0);
+  return sum / values.length;
+}
 
-    const AI_GATEWAY_API_KEY = process.env.AI_GATEWAY_API_KEY || '';
+async function generateAIRecommendation(location: string): Promise<string> {
+  const raw = await getDailyRawData(location);
 
-    if (!AI_GATEWAY_API_KEY) {
-      return new Response(
-        JSON.stringify({ recommendations: '⚠️ AI tidak tersedia: API key tidak ditemukan.' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
+  let rainDays = 0;
+  let maxTemp = 0;
+  let firstCondition = 'N/A';
+
+  if (raw.weather && raw.weather.daily) {
+    const daily = raw.weather.daily;
+    for (let i = 0; i < 7; i++) {
+      const rain = daily.precipitation_sum[i] || 0;
+      const temp = daily.temperature_2m_max[i];
+      if (rain > 0) rainDays++;
+      if (temp > maxTemp) maxTemp = temp;
+      if (i === 0) firstCondition = weatherCodes[daily.weather_code[i]] || 'Tidak Diketahui';
     }
+  }
 
-    const safeNumber = (val: any, digits: number = 0): string => {
-      if (typeof val !== 'number' || isNaN(val)) return 'N/A';
-      if (digits > 0) return val.toFixed(digits);
-      return Math.round(val).toLocaleString('id-ID');
-    };
+  const fxRate: number | null = raw.fx?.rates?.IDR ?? null;
+  const goldPrice: number | null = raw.gold?.price ?? null;
 
-    const prompt = 
-      'Anda adalah analis ekonomi senior untuk UMKM Indonesia di kota ' + (location || 'Indonesia') + '.' + String.fromCharCode(10) + String.fromCharCode(10) +
-      'Berikut data forecast 7 hari ke depan:' + String.fromCharCode(10) + String.fromCharCode(10) +
-      'CUACA:' + String.fromCharCode(10) +
-      '- Kondisi: ' + (weather?.condition || 'N/A') + String.fromCharCode(10) +
-      '- Suhu max: ' + safeNumber(weather?.tempMax) + 'C' + String.fromCharCode(10) +
-      '- Hari hujan: ' + safeNumber(weather?.rainDays) + ' hari' + String.fromCharCode(10) + String.fromCharCode(10) +
-      'KURS USD/IDR:' + String.fromCharCode(10) +
-      '- Saat ini: Rp ' + safeNumber(fx?.current) + String.fromCharCode(10) +
-      '- Forecast akhir: Rp ' + safeNumber(fx?.forecastEnd) + String.fromCharCode(10) +
-      '- Tren: ' + (fx?.trend || 'N/A') + String.fromCharCode(10) + String.fromCharCode(10) +
-      'HARGA EMAS:' + String.fromCharCode(10) +
-      '- Saat ini: $' + safeNumber(gold?.current, 2) + '/oz' + String.fromCharCode(10) +
-      '- Forecast akhir: $' + safeNumber(gold?.forecastEnd, 2) + '/oz' + String.fromCharCode(10) +
-      '- Tren: ' + (gold?.trend || 'N/A') + String.fromCharCode(10) + String.fromCharCode(10) +
-      'TUGAS ANDA:' + String.fromCharCode(10) +
-      '1. BUAT FORECAST 7 HARI untuk cuaca, kurs, dan emas menggunakan analisis AI (bukan SMA).' + String.fromCharCode(10) +
-      '2. Berikan REKOMENDASI STRATEGIS spesifik untuk UMKM.' + String.fromCharCode(10) + String.fromCharCode(10) +
-      'Format jawaban:' + String.fromCharCode(10) +
-      '=======================================' + String.fromCharCode(10) +
-      'AI FORECAST 7 HARI (AI)' + String.fromCharCode(10) +
-      '=======================================' + String.fromCharCode(10) +
-      'Cuaca: [prediksi AI]' + String.fromCharCode(10) +
-      'Kurs USD/IDR: [prediksi AI]' + String.fromCharCode(10) +
-      'Emas: [prediksi AI]' + String.fromCharCode(10) + String.fromCharCode(10) +
-      '=======================================' + String.fromCharCode(10) +
-      'REKOMENDASI STRATEGIS UMKM (AI)' + String.fromCharCode(10) +
-      '=======================================' + String.fromCharCode(10) +
-      '1. [Rekomendasi cuaca]' + String.fromCharCode(10) +
-      '2. [Rekomendasi kurs]' + String.fromCharCode(10) +
-      '3. [Rekomendasi emas]' + String.fromCharCode(10) +
-      '4. [Rekomendasi umum]' + String.fromCharCode(10) + String.fromCharCode(10) +
-      'Gunakan emoji, bahasa Indonesia, dan actionable.';
+  if (fxRate === null && goldPrice === null && !raw.weather) {
+    return '⚠️ Semua sumber data real-time gagal diambil, AI tidak bisa dijalankan.';
+  }
 
+  const fxSMA = fxRate !== null ? calculateSMA([fxRate, fxRate * 0.995, fxRate * 1.005]) : 0;
+  const goldSMA = goldPrice !== null ? calculateSMA([goldPrice, goldPrice * 0.99, goldPrice * 1.01]) : 0;
+
+  const AI_GATEWAY_API_KEY = process.env.AI_GATEWAY_API_KEY || '';
+
+  if (!AI_GATEWAY_API_KEY) {
+    return '⚠️ AI tidak tersedia: API key tidak ditemukan.';
+  }
+
+  const prompt =
+    'Anda adalah analis ekonomi senior untuk UMKM Indonesia di kota ' + location + '.' + String.fromCharCode(10) + String.fromCharCode(10) +
+    'Berikut data forecast 7 hari ke depan:' + String.fromCharCode(10) + String.fromCharCode(10) +
+    'CUACA:' + String.fromCharCode(10) +
+    '- Kondisi: ' + firstCondition + String.fromCharCode(10) +
+    '- Suhu max: ' + safeNumber(maxTemp) + 'C' + String.fromCharCode(10) +
+    '- Hari hujan: ' + safeNumber(rainDays) + ' hari' + String.fromCharCode(10) + String.fromCharCode(10) +
+    'KURS USD/IDR:' + String.fromCharCode(10) +
+    '- Saat ini: Rp ' + safeNumber(fxRate) + String.fromCharCode(10) +
+    '- Forecast akhir: Rp ' + safeNumber(fxSMA) + String.fromCharCode(10) +
+    '- Tren: ' + (fxSMA > (fxRate ?? 0) ? 'NAIK' : 'TURUN') + String.fromCharCode(10) + String.fromCharCode(10) +
+    'HARGA EMAS:' + String.fromCharCode(10) +
+    '- Saat ini: $' + safeNumber(goldPrice, 2) + '/oz' + String.fromCharCode(10) +
+    '- Forecast akhir: $' + safeNumber(goldSMA, 2) + '/oz' + String.fromCharCode(10) +
+    '- Tren: ' + (goldSMA > (goldPrice ?? 0) ? 'NAIK' : 'TURUN') + String.fromCharCode(10) + String.fromCharCode(10) +
+    'TUGAS ANDA:' + String.fromCharCode(10) +
+    '1. BUAT FORECAST 7 HARI untuk cuaca, kurs, dan emas menggunakan analisis AI (bukan SMA).' + String.fromCharCode(10) +
+    '2. Berikan REKOMENDASI STRATEGIS spesifik untuk UMKM.' + String.fromCharCode(10) + String.fromCharCode(10) +
+    'Format jawaban:' + String.fromCharCode(10) +
+    '=======================================' + String.fromCharCode(10) +
+    'AI FORECAST 7 HARI (AI)' + String.fromCharCode(10) +
+    '=======================================' + String.fromCharCode(10) +
+    'Cuaca: [prediksi AI]' + String.fromCharCode(10) +
+    'Kurs USD/IDR: [prediksi AI]' + String.fromCharCode(10) +
+    'Emas: [prediksi AI]' + String.fromCharCode(10) + String.fromCharCode(10) +
+    '=======================================' + String.fromCharCode(10) +
+    'REKOMENDASI STRATEGIS UMKM (AI)' + String.fromCharCode(10) +
+    '=======================================' + String.fromCharCode(10) +
+    '1. [Rekomendasi cuaca]' + String.fromCharCode(10) +
+    '2. [Rekomendasi kurs]' + String.fromCharCode(10) +
+    '3. [Rekomendasi emas]' + String.fromCharCode(10) +
+    '4. [Rekomendasi umum]' + String.fromCharCode(10) + String.fromCharCode(10) +
+    'Gunakan emoji, bahasa Indonesia, dan actionable.';
+
+  try {
     const response = await fetch('https://ai-gateway.edgeone.link/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -81,36 +113,47 @@ export async function POST(request: Request) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('AI Gateway error:', response.status, errorText);
-      return new Response(
-        JSON.stringify({ recommendations: '⚠️ AI tidak tersedia: Gateway error ' + response.status }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
+      return '⚠️ AI tidak tersedia: Gateway error ' + response.status;
     }
 
     const result = await response.json();
     const message = result.choices?.[0]?.message;
     const finishReason = result.choices?.[0]?.finish_reason;
 
-    // deepseek reasoning model kadang taruh jawaban di reasoning_content
-    // kalau content kosong karena token habis di proses berpikir
     let aiContent = message?.content || '';
     if (!aiContent && message?.reasoning_content) {
       aiContent = message.reasoning_content;
     }
 
     if (!aiContent) {
-      console.error('AI response kosong. finish_reason:', finishReason, 'raw:', JSON.stringify(result));
-      return new Response(
-        JSON.stringify({ recommendations: '⚠️ AI tidak tersedia: jawaban kosong (finish_reason: ' + (finishReason || 'unknown') + ')' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
+      console.error('AI response kosong. finish_reason:', finishReason);
+      return '⚠️ AI tidak tersedia: jawaban kosong (finish_reason: ' + (finishReason || 'unknown') + ')';
     }
 
-    return new Response(
-      JSON.stringify({ recommendations: aiContent, aiForecast: true }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    return aiContent;
+  } catch (error: any) {
+    console.error('Recommendations error:', error?.message || error);
+    return '⚠️ AI tidak tersedia: ' + (error?.message || 'Unknown error');
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const location: string = body?.location || 'Jakarta';
+
+    const cached = unstable_cache(
+      () => generateAIRecommendation(location),
+      ['ai-recommendation', location, getTodayKeyWIB()],
+      { revalidate: 86400 }
     );
 
+    const recommendations = await cached();
+
+    return new Response(
+      JSON.stringify({ recommendations, aiForecast: true }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
   } catch (error: any) {
     console.error('Recommendations error:', error?.message || error);
     return new Response(
