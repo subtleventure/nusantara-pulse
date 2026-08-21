@@ -1,9 +1,8 @@
 // src/app/api/ai-recommendations/route.ts
-// Rekomendasi AI di-cache per kota per hari (WIB) — AI Gateway hanya dipanggil
-// 1x per kota per hari, sisanya pakai hasil cache. Hemat kuota token.
+// Rekomendasi AI di-cache per kota per hari (WIB) di SUPABASE — AI Gateway hanya dipanggil
+// 1x per kota per hari, sisanya pakai hasil cache dari database. Hemat kuota token.
 
-import { unstable_cache } from 'next/cache';
-import { getDailyRawData, getTodayKeyWIB } from '../../lib/dailyData';
+import { getDailyRawData, getTodayKeyWIB, getCachedAIRecommendations, setCachedAIRecommendations } from '../../lib/dailyData';
 
 const weatherCodes: Record<number, string> = {
   0: 'Cerah', 1: 'Cerah Berawan', 2: 'Berawan', 3: 'Mendung',
@@ -25,6 +24,14 @@ function calculateSMA(values: number[]): number {
 }
 
 async function generateAIRecommendation(location: string): Promise<string> {
+  // ===== LANGKAH 1: CEK CACHE SUPABASE DULU =====
+  // Ini yang PENTING — kalau sudah ada di database, tidak perlu hit AI Gateway
+  const cached = await getCachedAIRecommendations(location);
+  if (cached !== null) {
+    return cached;
+  }
+
+  // ===== LANGKAH 2: Belum ada cache — generate baru =====
   const raw = await getDailyRawData(location);
 
   let rainDays = 0;
@@ -130,7 +137,12 @@ async function generateAIRecommendation(location: string): Promise<string> {
       return '⚠️ AI tidak tersedia: jawaban kosong (finish_reason: ' + (finishReason || 'unknown') + ')';
     }
 
+    // ===== LANGKAH 3: SIMPAN HASIL KE SUPABASE CACHE =====
+    // Ini yang PENTING — supaya besok tidak perlu hit AI lagi
+    await setCachedAIRecommendations(location, aiContent);
+
     return aiContent;
+
   } catch (error: any) {
     console.error('Recommendations error:', error?.message || error);
     return '⚠️ AI tidak tersedia: ' + (error?.message || 'Unknown error');
@@ -142,13 +154,8 @@ export async function POST(request: Request) {
     const body = await request.json();
     const location: string = body?.location || 'Jakarta';
 
-    const cached = unstable_cache(
-      () => generateAIRecommendation(location),
-      ['ai-recommendation', location, getTodayKeyWIB()],
-      { revalidate: 86400 }
-    );
-
-    const recommendations = await cached();
+    // Generate AI recommendation — sudah otomatis cek cache Supabase dulu
+    const recommendations = await generateAIRecommendation(location);
 
     return new Response(
       JSON.stringify({ recommendations, aiForecast: true }),
