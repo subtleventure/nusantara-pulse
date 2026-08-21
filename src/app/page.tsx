@@ -36,27 +36,38 @@ export default function Home() {
 
   async function fetchAllData() {
     setLoading(true);
+    setAiLoading(true);
     setError('');
     setDataWarnings([]);
     setWeatherDays([]);
     setFxCurrent(null);
     setGoldCurrent(null);
+    setAiRecs('');
+    setAiError('');
 
     try {
-      // Fetch data cuaca/kurs/emas via proxy (di-cache server per kota per hari)
-      const res = await fetch('/api/proxy-data?location=' + encodeURIComponent(location));
-      if (!res.ok) throw new Error('Gagal fetch data (status ' + res.status + ')');
-      const data = await res.json();
+      // ===== PARALLEL FETCH: proxy-data + ai-recommendations bersamaan =====
+      const [proxyRes, aiRes] = await Promise.all([
+        fetch('/api/proxy-data?location=' + encodeURIComponent(location)),
+        fetch('/api/ai-recommendations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ location: location })
+        })
+      ]);
 
-      if (data.errors && data.errors.length > 0) {
-        setDataWarnings(data.errors);
+      // ===== Parse proxy-data =====
+      if (!proxyRes.ok) throw new Error('Gagal fetch data (status ' + proxyRes.status + ')');
+      const proxyData = await proxyRes.json();
+
+      if (proxyData.errors && proxyData.errors.length > 0) {
+        setDataWarnings(proxyData.errors);
       }
 
       let days: WeatherDay[] = [];
 
-      // Parse Weather (kalau ada)
-      if (data.weather && data.weather.daily) {
-        const daily = data.weather.daily;
+      if (proxyData.weather && proxyData.weather.daily) {
+        const daily = proxyData.weather.daily;
         for (let i = 0; i < 7; i++) {
           const code = daily.weather_code[i];
           const rain = daily.precipitation_sum[i] || 0;
@@ -71,52 +82,31 @@ export default function Home() {
         setWeatherDays(days);
       }
 
-      // Parse FX (kalau ada)
-      let fxRate: number | null = null;
-      if (data.fx && data.fx.rates && typeof data.fx.rates.IDR === 'number') {
-        fxRate = data.fx.rates.IDR;
-        setFxCurrent(fxRate);
+      if (proxyData.fx && proxyData.fx.rates && typeof proxyData.fx.rates.IDR === 'number') {
+        setFxCurrent(proxyData.fx.rates.IDR);
       }
 
-      // Parse Gold (kalau ada)
-      let goldPrice: number | null = null;
-      if (data.gold && typeof data.gold.price === 'number') {
-        goldPrice = data.gold.price;
-        setGoldCurrent(goldPrice);
+      if (proxyData.gold && typeof proxyData.gold.price === 'number') {
+        setGoldCurrent(proxyData.gold.price);
       }
 
-      // Minta rekomendasi AI — server yang hitung & cache sendiri per kota per hari
-      if (fxRate !== null || goldPrice !== null || days.length > 0) {
-        await fetchAIRecommendations(location);
+      // ===== Parse AI recommendations =====
+      setAiLoading(false);
+      if (aiRes.ok) {
+        const aiData = await aiRes.json();
+        if (aiData.recommendations) {
+          setAiRecs(aiData.recommendations);
+        } else {
+          setAiError('AI tidak memberikan rekomendasi');
+        }
       } else {
-        setAiError('Semua sumber data real-time gagal diambil, AI tidak bisa dijalankan.');
+        setAiError('Gagal memuat AI: status ' + aiRes.status);
       }
 
     } catch (err: any) {
       setError('Gagal memuat data: ' + err.message);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function fetchAIRecommendations(loc: string) {
-    setAiLoading(true);
-    setAiError('');
-    try {
-      const res = await fetch('/api/ai-recommendations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ location: loc })
-      });
-      const result = await res.json();
-      if (result.recommendations) {
-        setAiRecs(result.recommendations);
-      } else {
-        setAiError('AI tidak memberikan rekomendasi');
-      }
-    } catch (err: any) {
-      setAiError('Gagal memuat AI: ' + err.message);
-    } finally {
       setAiLoading(false);
     }
   }
