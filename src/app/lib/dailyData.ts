@@ -1,8 +1,8 @@
 // src/app/lib/dailyData.ts
 // Helper bersama: ambil data cuaca/kurs/emas, di-cache per kota per hari (WIB)
-// Tanpa KV/database eksternal — pakai cache bawaan Next.js (unstable_cache)
+// Cache disimpan di Supabase (tabel ai_cache) — persisten, terbukti reliable.
 
-import { unstable_cache } from 'next/cache';
+import { getSupabaseClient } from './supabase';
 
 export interface DailyRawData {
   weather: any;
@@ -20,12 +20,16 @@ const CITY_COORDS: Record<string, { lat: number; lng: number }> = {
 };
 
 // Tanggal WIB (UTC+7) — supaya cache reset jam 00:00 waktu Indonesia, bukan UTC
-function todayKeyWIB(): string {
+export function getTodayKeyWIB(): string {
   const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
   return now.toISOString().slice(0, 10); // format: YYYY-MM-DD
 }
 
-async function fetchRawData(location: string): Promise<DailyRawData> {
+export function getCacheKey(location: string): string {
+  return location + '_' + getTodayKeyWIB();
+}
+
+async function fetchFreshRawData(location: string): Promise<DailyRawData> {
   const coords = CITY_COORDS[location] || CITY_COORDS['Jakarta'];
   const errors: string[] = [];
 
@@ -69,16 +73,54 @@ async function fetchRawData(location: string): Promise<DailyRawData> {
   };
 }
 
-// Data mentah (cuaca/kurs/emas) — cache per kota per hari, 1x fetch per hari
+// Ambil data mentah — cek cache Supabase dulu, kalau tidak ada baru fetch API luar
 export async function getDailyRawData(location: string): Promise<DailyRawData> {
-  const cached = unstable_cache(
-    () => fetchRawData(location),
-    ['daily-raw-data', location, todayKeyWIB()],
-    { revalidate: 86400 }
-  );
-  return cached();
-}
+  const supabase = getSupabaseClient();
+  const cacheKey = getCacheKey(location);
 
-export function getTodayKeyWIB(): string {
-  return todayKeyWIB();
+  // Kalau Supabase belum dikonfigurasi, langsung fetch fresh tanpa cache (tetap jalan)
+  if (!supabase) {
+    return fetchFreshRawData(location);
+  }
+
+  // 1. Cek apakah sudah ada cache untuk kota+hari ini
+  const { data: existing, error: readError } = await supabase
+    .from('ai_cache')
+    .select('weather_data, fx_data, gold_data')
+    .eq('cache_key', cacheKey)
+    .maybeSingle();
+
+  if (readError) {
+    console.error('Supabase read error:', readError.message);
+  }
+
+  if (existing && existing.weather_data) {
+    return {
+      weather: existing.weather_data,
+      fx: existing.fx_data,
+      gold: existing.gold_data,
+      errors: null
+    };
+  }
+
+  // 2. Belum ada cache — fetch fresh, lalu simpan
+  const fresh = await fetchFreshRawData(location);
+
+  const { error: upsertError } = await supabase
+    .from('ai_cache')
+    .upsert({
+      cache_key: cacheKey,
+      location: location,
+      cache_date: getTodayKeyWIB(),
+      weather_data: fresh.weather,
+      fx_data: fresh.fx,
+      gold_data: fresh.gold,
+      recommendations: '' // diisi belakangan oleh ai-recommendations
+    }, { onConflict: 'cache_key' });
+
+  if (upsertError) {
+    console.error('Supabase upsert error:', upsertError.message);
+  }
+
+  return fresh;
 }
