@@ -9,26 +9,6 @@ interface WeatherDay {
   condition: string;
 }
 
-interface ForecastData {
-  weather: {
-    rainDays: number;
-    tempMax: number;
-    condition: string;
-  };
-  fx: {
-    current: number;
-    forecastStart: number;
-    forecastEnd: number;
-    trend: string;
-  };
-  gold: {
-    current: number;
-    forecastStart: number;
-    forecastEnd: number;
-    trend: string;
-  };
-}
-
 const weatherCodes: Record<number, string> = {
   0: 'Cerah', 1: 'Cerah Berawan', 2: 'Berawan', 3: 'Mendung',
   45: 'Berkabut', 48: 'Berkabut', 51: 'Gerimis', 53: 'Gerimis',
@@ -63,7 +43,7 @@ export default function Home() {
     setGoldCurrent(null);
 
     try {
-      // Fetch semua data via proxy API (fix CORS) — kirim lokasi yang dipilih
+      // Fetch data cuaca/kurs/emas via proxy (di-cache server per kota per hari)
       const res = await fetch('/api/proxy-data?location=' + encodeURIComponent(location));
       if (!res.ok) throw new Error('Gagal fetch data (status ' + res.status + ')');
       const data = await res.json();
@@ -72,9 +52,6 @@ export default function Home() {
         setDataWarnings(data.errors);
       }
 
-      let rainDays = 0;
-      let maxTemp = 0;
-      let firstCondition = 'N/A';
       let days: WeatherDay[] = [];
 
       // Parse Weather (kalau ada)
@@ -84,8 +61,6 @@ export default function Home() {
           const code = daily.weather_code[i];
           const rain = daily.precipitation_sum[i] || 0;
           const temp = daily.temperature_2m_max[i];
-          if (rain > 0) rainDays++;
-          if (temp > maxTemp) maxTemp = temp;
           days.push({
             date: daily.time[i],
             tempMax: temp,
@@ -94,7 +69,6 @@ export default function Home() {
           });
         }
         setWeatherDays(days);
-        firstCondition = days[0]?.condition || 'N/A';
       }
 
       // Parse FX (kalau ada)
@@ -104,39 +78,16 @@ export default function Home() {
         setFxCurrent(fxRate);
       }
 
-      // Parse Gold (kalau ada) — endpoint: { price: number, ... }
+      // Parse Gold (kalau ada)
       let goldPrice: number | null = null;
       if (data.gold && typeof data.gold.price === 'number') {
         goldPrice = data.gold.price;
         setGoldCurrent(goldPrice);
       }
 
-      // Kirim ke AI hanya kalau minimal ada satu data real yang berhasil diambil
+      // Minta rekomendasi AI — server yang hitung & cache sendiri per kota per hari
       if (fxRate !== null || goldPrice !== null || days.length > 0) {
-        const fxSMA = fxRate !== null ? calculateSMA([fxRate, fxRate * 0.995, fxRate * 1.005]) : 0;
-        const goldSMA = goldPrice !== null ? calculateSMA([goldPrice, goldPrice * 0.99, goldPrice * 1.01]) : 0;
-
-        const forecastData: ForecastData = {
-          weather: {
-            rainDays,
-            tempMax: maxTemp,
-            condition: firstCondition
-          },
-          fx: {
-            current: fxRate ?? 0,
-            forecastStart: fxRate ?? 0,
-            forecastEnd: fxSMA,
-            trend: fxSMA > (fxRate ?? 0) ? 'NAIK' : 'TURUN'
-          },
-          gold: {
-            current: goldPrice ?? 0,
-            forecastStart: goldPrice ?? 0,
-            forecastEnd: goldSMA,
-            trend: goldSMA > (goldPrice ?? 0) ? 'NAIK' : 'TURUN'
-          }
-        };
-
-        await fetchAIRecommendations(forecastData, location);
+        await fetchAIRecommendations(location);
       } else {
         setAiError('Semua sumber data real-time gagal diambil, AI tidak bisa dijalankan.');
       }
@@ -148,19 +99,14 @@ export default function Home() {
     }
   }
 
-  function calculateSMA(values: number[]): number {
-    const sum = values.reduce((a, b) => a + b, 0);
-    return sum / values.length;
-  }
-
-  async function fetchAIRecommendations(data: ForecastData, loc: string) {
+  async function fetchAIRecommendations(loc: string) {
     setAiLoading(true);
     setAiError('');
     try {
       const res = await fetch('/api/ai-recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...data, location: loc })
+        body: JSON.stringify({ location: loc })
       });
       const result = await res.json();
       if (result.recommendations) {
@@ -301,7 +247,7 @@ export default function Home() {
       </div>
 
       <p style={{ textAlign: 'center', color: '#999', fontSize: 12 }}>
-        NusantaraPulse - Data real-time + AI Forecast
+        NusantaraPulse - Data real-time + AI Forecast (cache harian)
       </p>
     </div>
   );
