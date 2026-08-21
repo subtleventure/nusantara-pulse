@@ -1,5 +1,5 @@
 // src/app/lib/dailyData.ts
-// Helper bersama: ambil data cuaca/kurs/emas, di-cache per kota per hari (WIB)
+// Helper bersama: ambil data cuaca/kurs/emas + cache AI recommendations, di-cache per kota per hari (WIB)
 // Cache disimpan di Supabase (tabel ai_cache) — persisten, terbukti reliable.
 
 import { getSupabaseClient } from './supabase';
@@ -123,4 +123,58 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
   }
 
   return fresh;
+}
+
+// ============================================
+// FUNGSI BARU: Cache AI Recommendations
+// ============================================
+
+// Cek apakah AI recommendations sudah ada di cache Supabase
+export async function getCachedAIRecommendations(location: string): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  const cacheKey = getCacheKey(location);
+
+  const { data: existing, error: readError } = await supabase
+    .from('ai_cache')
+    .select('recommendations')
+    .eq('cache_key', cacheKey)
+    .maybeSingle();
+
+  if (readError) {
+    console.error('Supabase read AI cache error:', readError.message);
+    return null;
+  }
+
+  // Kalau recommendations sudah ada dan tidak kosong, return
+  if (existing && existing.recommendations && existing.recommendations.trim().length > 0) {
+    console.log('AI cache HIT untuk', location, '— tidak pakai token.');
+    return existing.recommendations;
+  }
+
+  return null;
+}
+
+// Simpan AI recommendations ke cache Supabase
+export async function setCachedAIRecommendations(location: string, recommendations: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return;
+
+  const cacheKey = getCacheKey(location);
+
+  const { error: upsertError } = await supabase
+    .from('ai_cache')
+    .upsert({
+      cache_key: cacheKey,
+      location: location,
+      cache_date: getTodayKeyWIB(),
+      recommendations: recommendations
+    }, { onConflict: 'cache_key' });
+
+  if (upsertError) {
+    console.error('Supabase upsert AI cache error:', upsertError.message);
+  } else {
+    console.log('AI cache SAVED untuk', location, '— token sudah dipakai 1x hari ini.');
+  }
 }
