@@ -36,38 +36,25 @@ export default function Home() {
 
   async function fetchAllData() {
     setLoading(true);
-    setAiLoading(true);
     setError('');
     setDataWarnings([]);
     setWeatherDays([]);
     setFxCurrent(null);
     setGoldCurrent(null);
-    setAiRecs('');
-    setAiError('');
 
     try {
-      // ===== PARALLEL FETCH: proxy-data + ai-recommendations bersamaan =====
-      const [proxyRes, aiRes] = await Promise.all([
-        fetch('/api/proxy-data?location=' + encodeURIComponent(location)),
-        fetch('/api/ai-recommendations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ location: location })
-        })
-      ]);
+      const res = await fetch('/api/proxy-data?location=' + encodeURIComponent(location));
+      if (!res.ok) throw new Error('Gagal fetch data (status ' + res.status + ')');
+      const data = await res.json();
 
-      // ===== Parse proxy-data =====
-      if (!proxyRes.ok) throw new Error('Gagal fetch data (status ' + proxyRes.status + ')');
-      const proxyData = await proxyRes.json();
-
-      if (proxyData.errors && proxyData.errors.length > 0) {
-        setDataWarnings(proxyData.errors);
+      if (data.errors && data.errors.length > 0) {
+        setDataWarnings(data.errors);
       }
 
       let days: WeatherDay[] = [];
 
-      if (proxyData.weather && proxyData.weather.daily) {
-        const daily = proxyData.weather.daily;
+      if (data.weather && data.weather.daily) {
+        const daily = data.weather.daily;
         for (let i = 0; i < 7; i++) {
           const code = daily.weather_code[i];
           const rain = daily.precipitation_sum[i] || 0;
@@ -82,31 +69,49 @@ export default function Home() {
         setWeatherDays(days);
       }
 
-      if (proxyData.fx && proxyData.fx.rates && typeof proxyData.fx.rates.IDR === 'number') {
-        setFxCurrent(proxyData.fx.rates.IDR);
+      let fxRate: number | null = null;
+      if (data.fx && data.fx.rates && typeof data.fx.rates.IDR === 'number') {
+        fxRate = data.fx.rates.IDR;
+        setFxCurrent(fxRate);
       }
 
-      if (proxyData.gold && typeof proxyData.gold.price === 'number') {
-        setGoldCurrent(proxyData.gold.price);
+      let goldPrice: number | null = null;
+      if (data.gold && typeof data.gold.price === 'number') {
+        goldPrice = data.gold.price;
+        setGoldCurrent(goldPrice);
       }
 
-      // ===== Parse AI recommendations =====
-      setAiLoading(false);
-      if (aiRes.ok) {
-        const aiData = await aiRes.json();
-        if (aiData.recommendations) {
-          setAiRecs(aiData.recommendations);
-        } else {
-          setAiError('AI tidak memberikan rekomendasi');
-        }
+      if (fxRate !== null || goldPrice !== null || days.length > 0) {
+        await fetchAIRecommendations(location);
       } else {
-        setAiError('Gagal memuat AI: status ' + aiRes.status);
+        setAiError('Semua sumber data real-time gagal diambil, AI tidak bisa dijalankan.');
       }
 
     } catch (err: any) {
       setError('Gagal memuat data: ' + err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchAIRecommendations(loc: string) {
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const res = await fetch('/api/ai-recommendations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ location: loc })
+      });
+      const result = await res.json();
+      if (result.recommendations) {
+        setAiRecs(result.recommendations);
+      } else {
+        setAiError('AI tidak memberikan rekomendasi');
+      }
+    } catch (err: any) {
+      setAiError('Gagal memuat AI: ' + err.message);
+    } finally {
       setAiLoading(false);
     }
   }
@@ -139,7 +144,6 @@ export default function Home() {
       <h1 style={{ textAlign: 'center' }}>NusantaraPulse</h1>
       <p style={{ textAlign: 'center', color: '#666' }}>Dashboard UMKM Indonesia</p>
 
-      {/* Data Warnings */}
       {dataWarnings.length > 0 && (
         <div style={{ border: '1px solid #f5c518', background: '#fffbea', borderRadius: 8, padding: 12, marginBottom: 16, color: '#8a6500' }}>
           <strong>⚠️ Sebagian data real-time gagal diambil:</strong>
@@ -149,7 +153,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Location Selector */}
       <div style={{ marginBottom: 20, textAlign: 'center' }}>
         <label>Lokasi: </label>
         <select 
@@ -171,7 +174,6 @@ export default function Home() {
         </button>
       </div>
 
-      {/* Weather */}
       <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2>Cuaca 7 Hari - {location}</h2>
         {weatherDays.length > 0 ? (
@@ -200,7 +202,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* FX */}
       <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2>Kurs USD/IDR</h2>
         {fxCurrent !== null ? (
@@ -210,7 +211,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* Gold */}
       <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2>Harga Emas</h2>
         {goldCurrent !== null ? (
@@ -220,7 +220,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* AI Analysis */}
       <div style={{ border: '2px solid #4CAF50', borderRadius: 8, padding: 16, marginBottom: 16, background: '#f8fff8' }}>
         <h2>AI Impact Analysis</h2>
         {aiLoading ? (
