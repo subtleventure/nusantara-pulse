@@ -1,6 +1,6 @@
 // src/app/lib/dailyData.ts
-// Helper bersama: ambil data cuaca/kurs/emas + cache AI recommendations, di-cache per kota per hari (WIB)
-// Cache disimpan di Supabase (tabel ai_cache) — persisten, terbukti reliable.
+// Helper bersama: ambil data cuaca/kurs/emas, di-cache per kota per hari (WIB)
+// Cache WAJIB disimpan di Supabase (tabel ai_cache) — tidak ada fallback tanpa cache.
 
 import { getSupabaseClient } from './supabase';
 
@@ -73,15 +73,15 @@ async function fetchFreshRawData(location: string): Promise<DailyRawData> {
   };
 }
 
-// Ambil data mentah — cek cache Supabase dulu, kalau tidak ada baru fetch API luar
+// Ambil data mentah — cek cache Supabase dulu, kalau tidak ada baru fetch API luar.
+// TIDAK ADA FALLBACK: kalau Supabase tidak terkonfigurasi, lempar error jelas.
 export async function getDailyRawData(location: string): Promise<DailyRawData> {
   const supabase = getSupabaseClient();
-  const cacheKey = getCacheKey(location);
-
-  // Kalau Supabase belum dikonfigurasi, langsung fetch fresh tanpa cache (tetap jalan)
   if (!supabase) {
-    return fetchFreshRawData(location);
+    throw new Error('Supabase belum terkonfigurasi: SUPABASE_URL / SUPABASE_SECRET_KEY tidak ditemukan di environment variables.');
   }
+
+  const cacheKey = getCacheKey(location);
 
   // 1. Cek apakah sudah ada cache untuk kota+hari ini
   const { data: existing, error: readError } = await supabase
@@ -91,7 +91,7 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
     .maybeSingle();
 
   if (readError) {
-    console.error('Supabase read error:', readError.message);
+    throw new Error('Supabase read error: ' + readError.message);
   }
 
   if (existing && existing.weather_data) {
@@ -115,66 +115,12 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
       weather_data: fresh.weather,
       fx_data: fresh.fx,
       gold_data: fresh.gold,
-      recommendations: '' // diisi belakangan oleh ai-recommendations
+      recommendations: ''
     }, { onConflict: 'cache_key' });
 
   if (upsertError) {
-    console.error('Supabase upsert error:', upsertError.message);
+    throw new Error('Supabase upsert error: ' + upsertError.message);
   }
 
   return fresh;
-}
-
-// ============================================
-// FUNGSI BARU: Cache AI Recommendations
-// ============================================
-
-// Cek apakah AI recommendations sudah ada di cache Supabase
-export async function getCachedAIRecommendations(location: string): Promise<string | null> {
-  const supabase = getSupabaseClient();
-  if (!supabase) return null;
-
-  const cacheKey = getCacheKey(location);
-
-  const { data: existing, error: readError } = await supabase
-    .from('ai_cache')
-    .select('recommendations')
-    .eq('cache_key', cacheKey)
-    .maybeSingle();
-
-  if (readError) {
-    console.error('Supabase read AI cache error:', readError.message);
-    return null;
-  }
-
-  // Kalau recommendations sudah ada dan tidak kosong, return
-  if (existing && existing.recommendations && existing.recommendations.trim().length > 0) {
-    console.log('AI cache HIT untuk', location, '— tidak pakai token.');
-    return existing.recommendations;
-  }
-
-  return null;
-}
-
-// Simpan AI recommendations ke cache Supabase
-export async function setCachedAIRecommendations(location: string, recommendations: string): Promise<void> {
-  const supabase = getSupabaseClient();
-  if (!supabase) return;
-
-  const cacheKey = getCacheKey(location);
-
-  const { error: upsertError } = await supabase
-    .from('ai_cache')
-    .upsert({
-      cache_key: cacheKey,
-      location: location,
-      cache_date: getTodayKeyWIB(),
-      recommendations: recommendations
-    }, { onConflict: 'cache_key' });
-
-  if (upsertError) {
-    console.error('Supabase upsert AI cache error:', upsertError.message);
-  } else {
-    console.log('AI cache SAVED untuk', location, '— token sudah dipakai 1x hari ini.');
-  }
 }
