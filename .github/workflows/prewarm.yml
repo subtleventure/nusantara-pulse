@@ -1,13 +1,46 @@
 name: Daily Prewarm
 on:
   schedule:
-    - cron: '0 23 * * *'  # 23:00 UTC = 06:00 WIB
+    - cron: '0 23 * * *'   # 23:00 UTC = 06:00 WIB
   workflow_dispatch: {}
+
 jobs:
   prewarm:
     runs-on: ubuntu-latest
     steps:
-      - name: Call prewarm endpoint
+      - name: Prewarm all cities (with retry per city)
+        env:
+          BASE_URL: https://nusantara-pulse.edgeone.dev/api/cron/prewarm
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -f "https://nusantara-pulse.edgeone.dev/api/cron/prewarm" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
+          cities=("Jakarta" "Surabaya" "Bandung" "Medan" "Makassar")
+          total=${#cities[@]}
+          max_attempts=5
+
+          for i in "${!cities[@]}"; do
+            city="${cities[$i]}"
+            index=$((i + 1))
+            success=false
+
+            for attempt in $(seq 1 $max_attempts); do
+              echo "== $city (percobaan $attempt/$max_attempts) =="
+              status=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+                -H "x-cron-secret: $CRON_SECRET" \
+                "$BASE_URL?city=$city&index=$index&total=$total")
+              cat /tmp/resp.json
+              echo ""
+
+              if [ "$status" = "200" ]; then
+                echo "$city berhasil"
+                success=true
+                break
+              fi
+
+              echo "$city gagal (status $status), tunggu sebelum coba lagi..."
+              sleep $((attempt * 5))
+            done
+
+            if [ "$success" = false ]; then
+              echo "::warning::$city gagal setelah $max_attempts percobaan, dilewati (akan dicoba lagi besok)"
+            fi
+          done
