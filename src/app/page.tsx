@@ -385,8 +385,8 @@ export default function Home() {
                       <th className="py-2 pr-2 font-medium">Cuaca</th>
                       <th className="py-2 pr-2 font-medium">Suhu</th>
                       <th className="py-2 pr-2 font-medium">Hujan</th>
-                      <th className="py-2 pr-2 font-medium">USD/IDR (AI)</th>
-                      <th className="py-2 pr-2 font-medium">Gold (AI)</th>
+                      <th className="py-2 pr-2 font-medium">USD/IDR</th>
+                      <th className="py-2 pr-2 font-medium">Gold</th>
                       <th className="py-2 font-medium">Risk</th>
                     </tr>
                   </thead>
