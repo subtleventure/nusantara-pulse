@@ -3,6 +3,7 @@
 // Cache WAJIB disimpan di Supabase (tabel ai_cache) — tidak ada fallback tanpa cache.
 
 import { getSupabaseClient } from './supabase';
+import { fetchWithTimeout, withTimeout } from './timeout';
 
 export interface DailyRawData {
   weather: any;
@@ -19,6 +20,9 @@ const CITY_COORDS: Record<string, { lat: number; lng: number }> = {
   Makassar: { lat: -5.1477, lng: 119.4327 }
 };
 
+const EXTERNAL_API_TIMEOUT_MS = 8000;
+const SUPABASE_TIMEOUT_MS = 6000;
+
 // Tanggal WIB (UTC+7) — supaya cache reset jam 00:00 waktu Indonesia, bukan UTC
 export function getTodayKeyWIB(): string {
   const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
@@ -29,25 +33,26 @@ export function getCacheKey(location: string): string {
   return location + '_' + getTodayKeyWIB();
 }
 
-// PENTING: ketiga fetch ini dijalankan PARALEL (Promise.allSettled), bukan berurutan
-// seperti sebelumnya. weather -> fx -> gold berurutan bisa makan 3-6 detik total.
-// Sekarang total waktu tunggu = fetch paling lambat saja (biasanya 1-2 detik).
+// Ketiga fetch ini PARALEL (Promise.allSettled) dan MASING-MASING PUNYA TIMEOUT 8 detik.
+// Ini memperbaiki bug utama: sebelumnya fetch tanpa timeout bisa menggantung SELAMANYA
+// kalau salah satu API luar hang (bukan error, cuma gak pernah respon).
 async function fetchFreshRawData(location: string): Promise<DailyRawData> {
   const coords = CITY_COORDS[location] || CITY_COORDS['Jakarta'];
   const errors: string[] = [];
 
   const [weatherResult, fxResult, goldResult] = await Promise.allSettled([
-    fetch(
-      'https://api.open-meteo.com/v1/forecast?latitude=' + coords.lat + '&longitude=' + coords.lng + '&daily=weather_code,temperature_2m_max,precipitation_sum&timezone=Asia/Jakarta&forecast_days=7'
+    fetchWithTimeout(
+      'https://api.open-meteo.com/v1/forecast?latitude=' + coords.lat + '&longitude=' + coords.lng + '&daily=weather_code,temperature_2m_max,precipitation_sum&timezone=Asia/Jakarta&forecast_days=7',
+      EXTERNAL_API_TIMEOUT_MS
     ).then(async (r) => {
       if (!r.ok) throw new Error('Status ' + r.status);
       return r.json();
     }),
-    fetch('https://api.frankfurter.app/latest?from=USD&to=IDR').then(async (r) => {
+    fetchWithTimeout('https://api.frankfurter.app/latest?from=USD&to=IDR', EXTERNAL_API_TIMEOUT_MS).then(async (r) => {
       if (!r.ok) throw new Error('Status ' + r.status);
       return r.json();
     }),
-    fetch('https://api.gold-api.com/price/XAU').then(async (r) => {
+    fetchWithTimeout('https://api.gold-api.com/price/XAU', EXTERNAL_API_TIMEOUT_MS).then(async (r) => {
       if (!r.ok) throw new Error('Status ' + r.status);
       return r.json();
     })
@@ -87,6 +92,7 @@ async function fetchFreshRawData(location: string): Promise<DailyRawData> {
 
 // Ambil data mentah — cek cache Supabase dulu, kalau tidak ada baru fetch API luar.
 // TIDAK ADA FALLBACK: kalau Supabase tidak terkonfigurasi, lempar error jelas.
+// Semua panggilan Supabase dibungkus timeout supaya tidak ikut menggantung.
 export async function getDailyRawData(location: string): Promise<DailyRawData> {
   const supabase = getSupabaseClient();
   if (!supabase) {
@@ -95,11 +101,11 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
 
   const cacheKey = getCacheKey(location);
 
-  const { data: existing, error: readError } = await supabase
-    .from('ai_cache')
-    .select('weather_data, fx_data, gold_data')
-    .eq('cache_key', cacheKey)
-    .maybeSingle();
+  const { data: existing, error: readError } = await withTimeout(
+    Promise.resolve(supabase.from('ai_cache').select('weather_data, fx_data, gold_data').eq('cache_key', cacheKey).maybeSingle()),
+    SUPABASE_TIMEOUT_MS,
+    'Supabase read ai_cache'
+  );
 
   if (readError) {
     throw new Error('Supabase read error: ' + readError.message);
@@ -116,9 +122,8 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
 
   const fresh = await fetchFreshRawData(location);
 
-  const { error: upsertError } = await supabase
-    .from('ai_cache')
-    .upsert({
+  const { error: upsertError } = await withTimeout(
+    Promise.resolve(supabase.from('ai_cache').upsert({
       cache_key: cacheKey,
       location: location,
       cache_date: getTodayKeyWIB(),
@@ -126,7 +131,10 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
       fx_data: fresh.fx,
       gold_data: fresh.gold,
       recommendations: ''
-    }, { onConflict: 'cache_key' });
+    }, { onConflict: 'cache_key' })),
+    SUPABASE_TIMEOUT_MS,
+    'Supabase upsert ai_cache'
+  );
 
   if (upsertError) {
     throw new Error('Supabase upsert error: ' + upsertError.message);
