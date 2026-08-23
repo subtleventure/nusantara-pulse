@@ -1,0 +1,13 @@
+name: Daily Prewarm
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 23:00 UTC = 06:00 WIB
+  workflow_dispatch: {}
+jobs:
+  prewarm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call prewarm endpoint
+        run: |
+          curl -f "https://nusantara-pulse.edgeone.dev/api/cron/prewarm" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
