@@ -1,41 +1,18 @@
 // src/app/api/cron/prewarm/route.ts
-// Dipanggil oleh cron EKSTERNAL (cron-job.org / GitHub Actions) setiap hari jam 06:00 WIB.
-// TIDAK dipanggil otomatis oleh EdgeOne — perlu dijadwalkan dari luar (lihat catatan di chat).
+// Dipanggil oleh GitHub Actions, SEKALI PER KOTA (bukan loop 5 kota dalam 1 request).
+// Alasan: edge/cloud function punya batas waktu eksekusi ketat — versi lama yang
+// memproses 5 kota + retry+backoff sampai belasan detik per percobaan dalam SATU
+// request menyebabkan platform mematikan function-nya (503 CLOUD_FUNCTION_SERVICE_UNAVAILABLE).
+// Sekarang: retry & orkestrasi 5 kota dipindah ke GitHub Actions (runner-nya jauh
+// lebih longgar batas waktunya), endpoint ini cuma proses 1 kota lalu langsung selesai.
 //
-// Alur: set maintenance=true -> loop 5 kota, retry sampai 5x per kota kalau gagal
-// (backoff 1s/2s/4s/8s/16s) -> update progress tiap kota selesai -> maintenance=false.
-//
-// Dilindungi CRON_SECRET supaya endpoint ini tidak bisa dipanggil sembarang orang.
+// Dipanggil: GET /api/cron/prewarm?key=...&city=Jakarta&index=1&total=5
 
 import { getTodayKeyWIB } from '../../../lib/dailyData';
 import { generateForecastForCity } from '../../../lib/aiForecast';
 import { setSystemStatus } from '../../../lib/supabase';
-import { sleep } from '../../../lib/timeout';
 
 export const dynamic = 'force-dynamic';
-
-const CITIES = ['Jakarta', 'Surabaya', 'Bandung', 'Medan', 'Makassar'];
-const MAX_ATTEMPTS = 5;
-const BACKOFF_MS = [1000, 2000, 4000, 8000, 16000];
-
-async function prewarmCityWithRetry(city: string): Promise<{ city: string; ok: boolean; attempts: number; error?: string }> {
-  let lastError = '';
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      const result = await generateForecastForCity(city, true);
-      if (result.ok) {
-        return { city, ok: true, attempts: attempt };
-      }
-      lastError = result.summary;
-    } catch (e: any) {
-      lastError = e?.message || String(e);
-    }
-    if (attempt < MAX_ATTEMPTS) {
-      await sleep(BACKOFF_MS[attempt - 1]);
-    }
-  }
-  return { city, ok: false, attempts: MAX_ATTEMPTS, error: lastError };
-}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -49,38 +26,47 @@ export async function GET(request: Request) {
     });
   }
 
-  await setSystemStatus({ maintenance: true, progress: 0, message: 'Memulai pre-warm cache ' + getTodayKeyWIB() });
+  const city = searchParams.get('city') || '';
+  const index = parseInt(searchParams.get('index') || '1', 10);
+  const total = parseInt(searchParams.get('total') || '1', 10);
 
-  const results: { city: string; ok: boolean; attempts: number; error?: string }[] = [];
-
-  for (let i = 0; i < CITIES.length; i++) {
-    const city = CITIES[i];
-    await setSystemStatus({
-      maintenance: true,
-      progress: Math.round((i / CITIES.length) * 100),
-      message: 'Memproses ' + city + ' (' + (i + 1) + '/' + CITIES.length + ')'
-    });
-
-    const result = await prewarmCityWithRetry(city);
-    results.push(result);
-
-    await setSystemStatus({
-      maintenance: true,
-      progress: Math.round(((i + 1) / CITIES.length) * 100),
-      message: (result.ok ? city + ' selesai' : city + ' GAGAL setelah ' + MAX_ATTEMPTS + 'x percobaan') +
-        ' (' + (i + 1) + '/' + CITIES.length + ')'
+  if (!city) {
+    return new Response(JSON.stringify({ error: 'Parameter city wajib diisi' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  const failedCities = results.filter((r) => !r.ok).map((r) => r.city);
-  const finalMessage = failedCities.length > 0
-    ? 'Selesai dengan sebagian gagal: ' + failedCities.join(', ') + ' (akan dicoba lagi besok)'
-    : 'Semua kota berhasil di-cache';
-
-  await setSystemStatus({ maintenance: false, progress: 100, message: finalMessage });
-
-  return new Response(JSON.stringify({ date: getTodayKeyWIB(), results }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' }
+  await setSystemStatus({
+    maintenance: true,
+    progress: Math.round(((index - 1) / total) * 100),
+    message: 'Memproses ' + city + ' (' + index + '/' + total + ')'
   });
+
+  try {
+    const result = await generateForecastForCity(city, true);
+    const isLast = index >= total;
+
+    await setSystemStatus({
+      maintenance: !isLast,
+      progress: Math.round((index / total) * 100),
+      message: (result.ok ? city + ' selesai' : city + ' gagal: ' + result.summary) + ' (' + index + '/' + total + ')'
+    });
+
+    return new Response(JSON.stringify({ date: getTodayKeyWIB(), city, ok: result.ok, summary: result.summary }), {
+      status: result.ok ? 200 : 502,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (error: any) {
+    const isLast = index >= total;
+    await setSystemStatus({
+      maintenance: !isLast,
+      progress: Math.round((index / total) * 100),
+      message: city + ' error: ' + (error?.message || 'unknown') + ' (' + index + '/' + total + ')'
+    });
+    return new Response(JSON.stringify({ error: error?.message || 'Unknown error' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
 }
