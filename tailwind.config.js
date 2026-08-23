@@ -8,12 +8,14 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        primary: '#1a56db',
-        secondary: '#7e3af2',
-        accent: '#f59e0b',
-        danger: '#e02424',
-        success: '#0e9f6e',
-      }
+        primary: '#0066FF',
+        secondary: '#FF7A00',
+        bg: '#FFFFFF',
+        ink: '#222222',
+      },
+      fontFamily: {
+        sans: ['Poppins', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+      },
     },
   },
   plugins: [],

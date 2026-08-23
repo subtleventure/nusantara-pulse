@@ -29,40 +29,52 @@ export function getCacheKey(location: string): string {
   return location + '_' + getTodayKeyWIB();
 }
 
+// PENTING: ketiga fetch ini dijalankan PARALEL (Promise.allSettled), bukan berurutan
+// seperti sebelumnya. weather -> fx -> gold berurutan bisa makan 3-6 detik total.
+// Sekarang total waktu tunggu = fetch paling lambat saja (biasanya 1-2 detik).
 async function fetchFreshRawData(location: string): Promise<DailyRawData> {
   const coords = CITY_COORDS[location] || CITY_COORDS['Jakarta'];
   const errors: string[] = [];
 
-  let weatherData = null;
-  try {
-    const weatherRes = await fetch(
+  const [weatherResult, fxResult, goldResult] = await Promise.allSettled([
+    fetch(
       'https://api.open-meteo.com/v1/forecast?latitude=' + coords.lat + '&longitude=' + coords.lng + '&daily=weather_code,temperature_2m_max,precipitation_sum&timezone=Asia/Jakarta&forecast_days=7'
-    );
-    if (!weatherRes.ok) throw new Error('Status ' + weatherRes.status);
-    weatherData = await weatherRes.json();
-  } catch (e: any) {
-    console.error('Weather API error:', e?.message || e);
-    errors.push('Cuaca: ' + (e?.message || 'gagal diambil'));
+    ).then(async (r) => {
+      if (!r.ok) throw new Error('Status ' + r.status);
+      return r.json();
+    }),
+    fetch('https://api.frankfurter.app/latest?from=USD&to=IDR').then(async (r) => {
+      if (!r.ok) throw new Error('Status ' + r.status);
+      return r.json();
+    }),
+    fetch('https://api.gold-api.com/price/XAU').then(async (r) => {
+      if (!r.ok) throw new Error('Status ' + r.status);
+      return r.json();
+    })
+  ]);
+
+  let weatherData = null;
+  if (weatherResult.status === 'fulfilled') {
+    weatherData = weatherResult.value;
+  } else {
+    console.error('Weather API error:', weatherResult.reason?.message || weatherResult.reason);
+    errors.push('Cuaca: ' + (weatherResult.reason?.message || 'gagal diambil'));
   }
 
   let fxData = null;
-  try {
-    const fxRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=IDR');
-    if (!fxRes.ok) throw new Error('Status ' + fxRes.status);
-    fxData = await fxRes.json();
-  } catch (e: any) {
-    console.error('FX API error:', e?.message || e);
-    errors.push('Kurs: ' + (e?.message || 'gagal diambil'));
+  if (fxResult.status === 'fulfilled') {
+    fxData = fxResult.value;
+  } else {
+    console.error('FX API error:', fxResult.reason?.message || fxResult.reason);
+    errors.push('Kurs: ' + (fxResult.reason?.message || 'gagal diambil'));
   }
 
   let goldData = null;
-  try {
-    const goldRes = await fetch('https://api.gold-api.com/price/XAU');
-    if (!goldRes.ok) throw new Error('Status ' + goldRes.status);
-    goldData = await goldRes.json();
-  } catch (e: any) {
-    console.error('Gold API error:', e?.message || e);
-    errors.push('Emas: ' + (e?.message || 'gagal diambil'));
+  if (goldResult.status === 'fulfilled') {
+    goldData = goldResult.value;
+  } else {
+    console.error('Gold API error:', goldResult.reason?.message || goldResult.reason);
+    errors.push('Emas: ' + (goldResult.reason?.message || 'gagal diambil'));
   }
 
   return {
@@ -83,7 +95,6 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
 
   const cacheKey = getCacheKey(location);
 
-  // 1. Cek apakah sudah ada cache untuk kota+hari ini
   const { data: existing, error: readError } = await supabase
     .from('ai_cache')
     .select('weather_data, fx_data, gold_data')
@@ -103,7 +114,6 @@ export async function getDailyRawData(location: string): Promise<DailyRawData> {
     };
   }
 
-  // 2. Belum ada cache — fetch fresh, lalu simpan
   const fresh = await fetchFreshRawData(location);
 
   const { error: upsertError } = await supabase
