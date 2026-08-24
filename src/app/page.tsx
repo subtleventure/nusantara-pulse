@@ -273,7 +273,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-bg text-ink">
       {/* Header */}
-      <div className="bg-primary px-6 py-5 flex flex-wrap items-center justify-between gap-4">
+      <div className="bg-primary px-6 py-5 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-20 shadow-md">
         <div className="flex items-center gap-2 text-white">
           <TrendingUp size={26} />
           <div>
@@ -385,8 +385,8 @@ export default function Home() {
                       <th className="py-2 pr-2 font-medium">Cuaca</th>
                       <th className="py-2 pr-2 font-medium">Suhu</th>
                       <th className="py-2 pr-2 font-medium">Hujan</th>
-                      <th className="py-2 pr-2 font-medium">USD/IDR</th>
-                      <th className="py-2 pr-2 font-medium">Gold</th>
+                      <th className="py-2 pr-2 font-medium">USD/IDR (AI)</th>
+                      <th className="py-2 pr-2 font-medium">Gold (AI)</th>
                       <th className="py-2 font-medium">Risk</th>
                     </tr>
                   </thead>
