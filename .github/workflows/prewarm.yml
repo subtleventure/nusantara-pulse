@@ -15,7 +15,7 @@ jobs:
         run: |
           cities=("Jakarta" "Surabaya" "Bandung" "Medan" "Makassar")
           total=${#cities[@]}
-          max_attempts=5
+          max_attempts=2  # dikurangi dari 5 — sekarang route sendiri sudah retry 3x + fallback Gemini, jadi ini cuma buat gangguan infra beneran (network/timeout), bukan format AI
 
           for i in "${!cities[@]}"; do
             city="${cities[$i]}"
