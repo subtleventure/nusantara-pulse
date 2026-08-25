@@ -1,0 +1,1 @@
+global_forecast_table.sql
