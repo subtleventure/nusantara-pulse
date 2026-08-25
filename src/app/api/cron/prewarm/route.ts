@@ -6,6 +6,10 @@
 // Sekarang: retry & orkestrasi 5 kota dipindah ke GitHub Actions (runner-nya jauh
 // lebih longgar batas waktunya), endpoint ini cuma proses 1 kota lalu langsung selesai.
 //
+// PENTING: endpoint ini HARUS dipanggil SETELAH /api/cron/prewarm-global sukses
+// (lihat prewarm.yml) — forecast USD/Gold dibaca dari cache global yang sudah
+// disiapkan step itu, generateForecastForCity TIDAK generate ulang forecast global.
+//
 // Dipanggil: GET /api/cron/prewarm?key=...&city=Jakarta&index=1&total=5
 
 import { getTodayKeyWIB } from '../../../lib/dailyData';
