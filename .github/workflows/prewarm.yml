@@ -8,6 +8,36 @@ jobs:
   prewarm:
     runs-on: ubuntu-latest
     steps:
+      - name: Prewarm global forecast (USD/Gold) — SEKALI, sebelum kota
+        env:
+          GLOBAL_URL: https://nusantara-pulse.edgeone.dev/api/cron/prewarm-global
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          max_attempts=2
+          success=false
+
+          for attempt in $(seq 1 $max_attempts); do
+            echo "== Forecast global (percobaan $attempt/$max_attempts) =="
+            status=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+              -H "x-cron-secret: $CRON_SECRET" \
+              "$GLOBAL_URL")
+            cat /tmp/resp.json
+            echo ""
+
+            if [ "$status" = "200" ]; then
+              echo "Forecast global berhasil"
+              success=true
+              break
+            fi
+
+            echo "Forecast global gagal (status $status), tunggu sebelum coba lagi..."
+            sleep $((attempt * 5))
+          done
+
+          if [ "$success" = false ]; then
+            echo "::error::Forecast global gagal setelah $max_attempts percobaan. Kota-kota tetap diproses di step berikutnya (masing-masing punya fallback baca-atau-generate-sekali), tapi cek log Supabase/EdgeOne."
+          fi
+
       - name: Prewarm all cities (with retry per city)
         env:
           BASE_URL: https://nusantara-pulse.edgeone.dev/api/cron/prewarm
@@ -15,7 +45,7 @@ jobs:
         run: |
           cities=("Jakarta" "Surabaya" "Bandung" "Medan" "Makassar")
           total=${#cities[@]}
-          max_attempts=2  # dikurangi dari 5 — sekarang route sendiri sudah retry 3x + fallback Gemini, jadi ini cuma buat gangguan infra beneran (network/timeout), bukan format AI
+          max_attempts=2  # route sendiri sudah retry 3x + fallback Gemini, jadi ini cuma buat gangguan infra beneran (network/timeout), bukan format AI
 
           for i in "${!cities[@]}"; do
             city="${cities[$i]}"
