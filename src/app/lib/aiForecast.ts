@@ -2,10 +2,19 @@
 // Logic generate forecast AI per kota — dipakai oleh route POST /api/ai-recommendations
 // DAN oleh cron pre-warm. Dipisah dari route.ts karena Next.js tidak izinkan export
 // custom di file route (hanya GET/POST/dst).
+//
+// PERUBAHAN PENTING: forecast USD/IDR dan Gold TIDAK lagi digenerate di sini.
+// Angka itu global (sama untuk semua kota) dan sekarang digenerate 1x/hari oleh
+// globalForecast.ts. File ini hanya generate "risk" per hari (dipengaruhi cuaca +
+// kondisi ekonomi lokal) dan "summary" strategis untuk UMKM di kota tsb — lalu
+// menggabungkannya dengan usd/gold dari global_forecast supaya bentuk output ke
+// frontend (DayForecast{usd,gold,risk}) tetap sama seperti sebelumnya.
 
 import { getDailyRawData, getCacheKey, getTodayKeyWIB } from './dailyData';
 import { getSupabaseClient } from './supabase';
-import { fetchWithTimeout, withTimeout } from './timeout';
+import { withTimeout } from './timeout';
+import { callAIWithFallback, parseAIJson } from './aiClient';
+import { generateGlobalForecast, GlobalDayForecast } from './globalForecast';
 
 export interface DayForecast {
   usd: number | null;
@@ -18,9 +27,8 @@ export interface AIResult {
   summary: string;
 }
 
-const AI_GATEWAY_TIMEOUT_MS = 25000;
-const GEMINI_TIMEOUT_MS = 20000;
 const SUPABASE_TIMEOUT_MS = 6000;
+const CITY_MAX_TOKENS = 600; // diturunkan dari 800 — sekarang cuma minta risk[7] + summary, bukan usd/gold lagi
 
 function safeNumber(val: any, digits: number = 0): string {
   if (typeof val !== 'number' || isNaN(val)) return 'N/A';
@@ -28,254 +36,81 @@ function safeNumber(val: any, digits: number = 0): string {
   return Math.round(val).toLocaleString('id-ID');
 }
 
-function tryParse(text: string): AIResult | null {
-  try {
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed.forecast) || typeof parsed.summary !== 'string') return null;
-    return parsed as AIResult;
-  } catch {
-    return null;
-  }
+interface CityAIResult {
+  risk: ('low' | 'medium' | 'high')[]; // 7 entri
+  summary: string;
 }
 
-// Parser toleran, 3 lapis:
-// 1. Coba langsung (kalau model sudah balas JSON murni)
-// 2. Coba yang dibungkus ```json ... ``` code fence
-// 3. Ambil substring dari '{' pertama sampai '}' terakhir (jaga-jaga kalau model
-//    nulis kalimat pembuka/penutup di luar JSON meski sudah dilarang di prompt)
-function parseAIJson(raw: string): AIResult | null {
-  const cleaned = raw.trim();
-
-  const direct = tryParse(cleaned);
-  if (direct) return direct;
-
-  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    const fromFence = tryParse(fenceMatch[1].trim());
-    if (fromFence) return fromFence;
+function validateCityResult(parsed: any): CityAIResult | null {
+  if (!parsed || !Array.isArray(parsed.risk) || typeof parsed.summary !== 'string') return null;
+  if (parsed.risk.length === 0) return null;
+  for (const r of parsed.risk) {
+    if (r !== 'low' && r !== 'medium' && r !== 'high') return null;
   }
-
-  const firstBrace = cleaned.indexOf('{');
-  const lastBrace = cleaned.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    const fromBraces = tryParse(cleaned.slice(firstBrace, lastBrace + 1));
-    if (fromBraces) return fromBraces;
-  }
-
-  return null;
+  return { risk: parsed.risk, summary: parsed.summary };
 }
 
-// Satu kali percobaan panggil AI Gateway + parse hasilnya.
-// Mengembalikan null kalau format/gateway gagal (supaya bisa di-retry oleh caller),
-// bukan langsung mengembalikan AIResult "gagal" — best-effort dipisah dari final-give-up.
-async function attemptOnce(prompt: string, apiKey: string, useNewParams: boolean): Promise<AIResult | null> {
-  const body: any = {
-    model: '@makers/deepseek-v4-flash',
-    messages: [
-      { role: 'system', content: 'Anda analis ekonomi UMKM Indonesia. Balas HANYA JSON valid sesuai skema yang diminta, tanpa markdown, tanpa penjelasan.' },
-      { role: 'user', content: prompt }
-    ],
-    max_tokens: useNewParams ? 800 : 1000,
-    temperature: 0.6
-  };
-
-  if (useNewParams) {
-    // Matikan mode "thinking" DeepSeek V4 — parameter resmi dari dokumentasi DeepSeek API.
-    body.thinking = { type: 'disabled' };
-    // JSON Mode standar OpenAI-compatible — memaksa balasan berupa JSON sintaksis valid
-    // di level API (bukan cuma "diminta baik-baik" lewat teks system prompt).
-    // CATATAN: ini menjamin JSON-nya valid secara SINTAKS, TIDAK menjamin isinya persis
-    // sesuai skema {forecast, summary} yang kita mau — makanya tetap perlu validasi +
-    // retry di luar, bukan cuma andalkan parameter ini sendirian.
-    body.response_format = { type: 'json_object' };
-  }
-
-  const response = await fetchWithTimeout('https://ai-gateway.edgeone.link/v1/chat/completions', AI_GATEWAY_TIMEOUT_MS, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('AI Gateway error (useNewParams=' + useNewParams + '):', response.status, errorText);
-    return null;
-  }
-
-  const result = await response.json();
-  return finishParsing(result);
-}
-
-const MAX_AI_ATTEMPTS = 3;
-
-// Provider FALLBACK, dipanggil LANGSUNG ke Google (bukan lewat EdgeOne) supaya
-// benar-benar independen — kalau EdgeOne gateway-nya sendiri yang bermasalah,
-// fallback ini tetap bisa jalan karena tidak lewat infrastruktur yang sama.
-// Gemini punya responseSchema yang memaksa bentuk JSON persis sesuai skema kita
-// di level API — lebih kuat daripada response_format json_object biasa.
-async function callGeminiFallback(prompt: string): Promise<AIResult | null> {
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-  if (!GEMINI_API_KEY) {
-    console.error('Gemini fallback dilewati: GEMINI_API_KEY tidak diset.');
-    return null;
-  }
-
-  const schema = {
-    type: 'OBJECT',
-    properties: {
-      forecast: {
-        type: 'ARRAY',
-        items: {
-          type: 'OBJECT',
-          properties: {
-            usd: { type: 'NUMBER' },
-            gold: { type: 'NUMBER' },
-            risk: { type: 'STRING', enum: ['low', 'medium', 'high'] }
-          },
-          required: ['usd', 'gold', 'risk']
-        }
-      },
-      summary: { type: 'STRING' }
-    },
-    required: ['forecast', 'summary']
-  };
-
-  try {
-    const response = await fetchWithTimeout(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_API_KEY,
-      GEMINI_TIMEOUT_MS,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema: schema,
-            temperature: 0.6,
-            maxOutputTokens: 800
-          }
-        })
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Gemini fallback error:', response.status, errorText);
-      return null;
-    }
-
-    const result = await response.json();
-    const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    if (!text) {
-      console.error('Gemini fallback: jawaban kosong.');
-      return null;
-    }
-
-    const parsed = parseAIJson(text);
-    if (!parsed) {
-      console.error('Gemini fallback: JSON tidak valid meski responseSchema dipakai:', text);
-      return null;
-    }
-    return parsed;
-  } catch (error: any) {
-    console.error('Gemini fallback exception:', error?.message || error);
-    return null;
-  }
-}
-
-// PENTING — ini jaring pengaman permanen, bukan tebak-tebakan "hari ini kebetulan berhasil":
-// AI itu probabilistik, response_format/thinking-disabled MENGURANGI kemungkinan gagal
-// tapi TIDAK menjamin 100% selamanya. Urutan pertahanan:
-// 1) EdgeOne/DeepSeek dengan parameter baru, sampai 3x percobaan.
-// 2) Kalau 3x itu semua gagal → SEKALI coba provider lain (Gemini, infrastruktur beda
-//    sepenuhnya) — bukan mengulang model yang sama yang sudah terbukti gagal 3x.
-// 3) Kalau Gemini juga gagal/tidak dikonfigurasi → baru dilaporkan gagal ke pemanggil
-//    (cron akan retry seluruh kota ini lagi nanti, tapi jarang sampai situ).
-async function callAIGateway(location: string, raw: Awaited<ReturnType<typeof getDailyRawData>>): Promise<AIResult> {
+async function callCityAI(
+  location: string,
+  raw: Awaited<ReturnType<typeof getDailyRawData>>,
+  globalForecast: GlobalDayForecast[]
+): Promise<CityAIResult & { ok: boolean; failureSummary?: string }> {
   const fxRate: number | null = raw.fx?.rates?.IDR ?? null;
   const goldPrice: number | null = raw.gold?.price ?? null;
 
-  if (fxRate === null && goldPrice === null && !raw.weather) {
-    return { forecast: [], summary: 'Semua sumber data real-time gagal diambil, AI tidak bisa dijalankan.' };
-  }
+  const weatherSummary = raw.weather
+    ? 'Data cuaca 7 hari tersedia (kode cuaca, suhu maks, curah hujan harian).'
+    : 'Data cuaca tidak tersedia.';
 
-  const AI_GATEWAY_API_KEY = process.env.AI_GATEWAY_API_KEY || '';
-  if (!AI_GATEWAY_API_KEY) {
-    return { forecast: [], summary: 'AI tidak tersedia: API key tidak ditemukan.' };
-  }
+  const globalSummary = globalForecast.length > 0
+    ? globalForecast.map((d, i) => 'H' + i + ': USD=' + safeNumber(d.usd) + ' Gold=$' + safeNumber(d.gold, 2)).join(', ')
+    : 'Forecast global tidak tersedia.';
 
+  const systemPrompt = 'Anda analis ekonomi UMKM Indonesia. Balas HANYA JSON valid sesuai skema yang diminta, tanpa markdown, tanpa penjelasan.';
   const prompt =
-    'Data ekonomi kota ' + location + ' hari ini: USD/IDR=' + safeNumber(fxRate) +
-    ', Emas=$' + safeNumber(goldPrice, 2) + '/oz.' +
-    ' Buat forecast 7 hari (array "forecast", index 0=hari ini..6=hari ke-7) berisi objek {usd:number,gold:number,risk:"low"|"medium"|"high"}.' +
-    ' Tambahkan "summary": ringkasan rekomendasi strategis UMKM, maksimal 350 karakter, bahasa Indonesia, tanpa emoji.' +
-    ' Balas HANYA JSON valid satu baris, tanpa markdown, tanpa teks lain: {"forecast":[...],"summary":"..."}';
+    'Kota: ' + location + '. Data hari ini: USD/IDR=' + safeNumber(fxRate) + ', Emas=$' + safeNumber(goldPrice, 2) + '/oz. ' +
+    weatherSummary + ' Forecast ekonomi nasional 7 hari ke depan (index 0=hari ini..6=hari ke-7): ' + globalSummary + '.' +
+    ' Berdasarkan data di atas, buat array "risk" (7 entri, index 0=hari ini..6=hari ke-7) berisi tingkat risiko usaha UMKM' +
+    ' di kota tsb tiap hari: "low"|"medium"|"high" (pertimbangkan cuaca ekstrem DAN volatilitas ekonomi).' +
+    ' Tambahkan "summary": ringkasan rekomendasi strategis UMKM untuk kota ini, maksimal 350 karakter, bahasa Indonesia, tanpa emoji.' +
+    ' Balas HANYA JSON valid satu baris, tanpa markdown, tanpa teks lain: {"risk":[...],"summary":"..."}';
 
-  let lastFailureSummary = 'AI tidak tersedia: percobaan gagal.';
-  let gatewayRejectsNewParams = false; // kalau ketahuan gateway tolak field baru, langsung skip di percobaan berikutnya
+  const geminiSchema = {
+    type: 'OBJECT',
+    properties: {
+      risk: { type: 'ARRAY', items: { type: 'STRING', enum: ['low', 'medium', 'high'] } },
+      summary: { type: 'STRING' }
+    },
+    required: ['risk', 'summary']
+  };
 
-  for (let attempt = 1; attempt <= MAX_AI_ATTEMPTS; attempt++) {
-    try {
-      const useNewParams = !gatewayRejectsNewParams;
-      let result = await attemptOnce(prompt, AI_GATEWAY_API_KEY, useNewParams);
+  const result = await callAIWithFallback<CityAIResult>(
+    prompt,
+    systemPrompt,
+    geminiSchema,
+    validateCityResult,
+    CITY_MAX_TOKENS
+  );
 
-      // Kalau percobaan dengan parameter baru gagal DI PERCOBAAN PERTAMA, kemungkinan
-      // gateway menolak field-nya (bukan cuma AI ngaco) — coba sekali lagi tanpa field itu
-      // SEBELUM menghitungnya sebagai 1 percobaan gagal penuh.
-      if (!result && useNewParams && attempt === 1) {
-        console.error('Percobaan 1 gagal dengan thinking/response_format, coba tanpa parameter itu...');
-        result = await attemptOnce(prompt, AI_GATEWAY_API_KEY, false);
-        if (result) gatewayRejectsNewParams = true; // ingat untuk percobaan berikutnya
-      }
-
-      if (result && result.forecast.length > 0) {
-        return result;
-      }
-      if (result) lastFailureSummary = result.summary;
-    } catch (error: any) {
-      console.error('AI Gateway exception percobaan ' + attempt + ':', error?.message || error);
-      lastFailureSummary = 'AI tidak tersedia: ' + (error?.message || 'Unknown error');
-    }
-
-    if (attempt < MAX_AI_ATTEMPTS) {
-      console.error('Percobaan ' + attempt + '/' + MAX_AI_ATTEMPTS + ' gagal untuk ' + location + ', mencoba lagi...');
-    }
+  if (result.ok && result.data) {
+    return { ...result.data, ok: true };
   }
-
-  console.error(location + ': semua ' + MAX_AI_ATTEMPTS + ' percobaan di EdgeOne/DeepSeek gagal, coba provider fallback (Gemini)...');
-  const fallbackResult = await callGeminiFallback(prompt);
-  if (fallbackResult && fallbackResult.forecast.length > 0) {
-    console.error(location + ': berhasil pakai Gemini fallback.');
-    return fallbackResult;
-  }
-
-  console.error(location + ': semua percobaan (EdgeOne + Gemini fallback) gagal.');
-  return { forecast: [], summary: lastFailureSummary };
+  return { risk: [], summary: '', ok: false, failureSummary: result.failureSummary };
 }
 
-function finishParsing(result: any): AIResult {
-  const message = result.choices?.[0]?.message;
-  const finishReason = result.choices?.[0]?.finish_reason;
-
-  let aiContent = message?.content || '';
-  if (!aiContent && message?.reasoning_content) {
-    aiContent = message.reasoning_content;
+// Gabungkan usd/gold global dengan risk per kota jadi bentuk DayForecast[] yang
+// dipakai frontend — supaya page.tsx TIDAK perlu berubah sama sekali.
+function mergeForecast(globalForecast: GlobalDayForecast[], risk: ('low' | 'medium' | 'high')[]): DayForecast[] {
+  const len = Math.max(globalForecast.length, risk.length);
+  const merged: DayForecast[] = [];
+  for (let i = 0; i < len; i++) {
+    merged.push({
+      usd: globalForecast[i]?.usd ?? null,
+      gold: globalForecast[i]?.gold ?? null,
+      risk: risk[i] || 'medium'
+    });
   }
-
-  if (!aiContent) {
-    console.error('AI response kosong. finish_reason:', finishReason);
-    return { forecast: [], summary: 'AI tidak tersedia: jawaban kosong (finish_reason: ' + (finishReason || 'unknown') + ')' };
-  }
-
-  const parsed = parseAIJson(aiContent);
-  if (!parsed) {
-    console.error('AI JSON tidak valid. finish_reason:', finishReason, '| raw:', aiContent);
-    const preview = aiContent.slice(0, 120).replace(/\s+/g, ' ');
-    return { forecast: [], summary: 'AI tidak tersedia: format jawaban tidak valid (finish_reason: ' + (finishReason || 'unknown') + '). Cuplikan: ' + preview };
-  }
-
-  return parsed;
+  return merged;
 }
 
 // forceRefresh=true dipakai cron supaya tidak baca cache lama, selalu generate ulang.
@@ -304,8 +139,24 @@ export async function generateForecastForCity(location: string, forceRefresh: bo
     }
   }
 
-  const aiResult = await callAIGateway(location, raw);
-  const ok = aiResult.forecast.length > 0;
+  // PENTING: forceRefresh DI SINI cuma untuk cache per-KOTA, TIDAK diteruskan ke
+  // forecast global. Forecast global sengaja SELALU dibaca dari cache (forceRefresh=false)
+  // di titik ini — proses generate-ulangnya sudah diorkestrasi TERPISAH dan LEBIH DULU
+  // oleh cron step "prewarm-global" (lihat api/cron/prewarm-global/route.ts), SEBELUM
+  // 5 kota diproses. Kalau forceRefresh kota ini ikut diteruskan ke global, maka tiap
+  // kota akan generate ulang forecast global 5x lagi — persis bug yang sedang diperbaiki.
+  // Fallback: kalau cache global ternyata kosong (mis. hari pertama sebelum cron pernah
+  // jalan sama sekali), generateGlobalForecast(false) akan generate sekali di sini juga.
+  const globalResult = await generateGlobalForecast(false);
+  const cityResult = await callCityAI(location, raw, globalResult.forecast);
+
+  const ok = cityResult.ok && globalResult.ok;
+  const aiResult: AIResult = {
+    forecast: mergeForecast(globalResult.forecast, cityResult.risk),
+    summary: cityResult.ok
+      ? cityResult.summary
+      : (cityResult.failureSummary || 'AI tidak tersedia: gagal generate risk/summary untuk ' + location + '.')
+  };
 
   await withTimeout(
     Promise.resolve(supabase.from('ai_cache').upsert({
